@@ -897,7 +897,7 @@ func TestBuildReplyContent_FallbackWhenManyTables(t *testing.T) {
 	}
 	content := sb.String()
 
-	msgType, _ := buildReplyContent(content)
+	msgType, _ := buildReplyContent(content, nil)
 	if msgType == larkim.MsgTypeInteractive {
 		t.Errorf("expected non-card message type for >5 tables, got interactive")
 	}
@@ -912,7 +912,7 @@ func TestBuildReplyContent_FallbackWhenManyTables(t *testing.T) {
 	}
 	content5 := sb.String()
 
-	msgType5, _ := buildReplyContent(content5)
+	msgType5, _ := buildReplyContent(content5, nil)
 	if msgType5 != larkim.MsgTypeInteractive {
 		t.Errorf("expected interactive card for 5 tables, got %s", msgType5)
 	}
@@ -1465,7 +1465,7 @@ func TestResolveMentions_MultipleOccurrences(t *testing.T) {
 // inside an email (or URL) must not be mistaken for a mention and must not
 // force MsgTypeText, so markdown content still renders as an interactive card.
 func TestBuildReplyContent_NoFalsePositiveOnEmail(t *testing.T) {
-	msgType, _ := buildReplyContent("**bold** report sent to a@b.com")
+	msgType, _ := buildReplyContent("**bold** report sent to a@b.com", nil)
 	if msgType != larkim.MsgTypeInteractive {
 		t.Errorf("email '@' should not force MsgTypeText; got %s", msgType)
 	}
@@ -1474,7 +1474,7 @@ func TestBuildReplyContent_NoFalsePositiveOnEmail(t *testing.T) {
 // TestBuildReplyContent_RealMentionForcesText confirms a resolved mention
 // (<at user_id="...">) still forces MsgTypeText even when markdown is present.
 func TestBuildReplyContent_RealMentionForcesText(t *testing.T) {
-	msgType, _ := buildReplyContent("**bold** <at user_id=\"ou_bot\">Collector-B</at> please review")
+	msgType, _ := buildReplyContent("**bold** <at user_id=\"ou_bot\">Collector-B</at> please review", nil)
 	if msgType != larkim.MsgTypeText {
 		t.Errorf("resolved mention should force MsgTypeText; got %s", msgType)
 	}
@@ -1489,7 +1489,7 @@ func TestBuildReplyContent_CardFormatMentionForcesText(t *testing.T) {
 		{"card_format", "# report\n\n<at id=ou_bot></at> please review\n\n```\nok\n```"},
 	}
 	for _, tc := range cases {
-		msgType, _ := buildReplyContent(tc.content)
+		msgType, _ := buildReplyContent(tc.content, nil)
 		if msgType != larkim.MsgTypeText {
 			t.Errorf("%s: mention should force MsgTypeText; got %s", tc.name, msgType)
 		}
@@ -1508,9 +1508,62 @@ func TestResolveMentions_MarkdownForcesTextFormat(t *testing.T) {
 		t.Fatalf("markdown content must still resolve to text format; got %q", result)
 	}
 	// Verify the full pipeline forces MsgTypeText
-	msgType, _ := buildReplyContent(result)
+	msgType, _ := buildReplyContent(result, nil)
 	if msgType != larkim.MsgTypeText {
 		t.Fatalf("markdown + mention must force MsgTypeText so Feishu fires the mention event; got %s", msgType)
+	}
+}
+
+// TestBuildReplyContent_RoutesByMentionTarget: with a known bot open_id set,
+// a mention targeting a peer bot degrades to MsgTypeText (mention events only
+// fire from text messages), while a human-only mention keeps card rendering
+// with the at-tag converted to the card syntax.
+func TestBuildReplyContent_RoutesByMentionTarget(t *testing.T) {
+	bots := map[string]bool{"ou_peer_bot": true}
+
+	// Bot mention: must stay MsgTypeText regardless of markdown.
+	msgType, body := buildReplyContent("# report\n\n<at user_id=\"ou_peer_bot\">mac-c</at> done", bots)
+	if msgType != larkim.MsgTypeText {
+		t.Errorf("bot mention must force MsgTypeText; got %s", msgType)
+	}
+	if !strings.Contains(body, "ou_peer_bot") || !strings.Contains(body, "at user_id=") {
+		t.Errorf("text body must keep the text at-tag; got %s", body)
+	}
+
+	// Human mention: card rendering preserved, at-tag converted to card form.
+	msgType, body = buildReplyContent("# report\n\n**done** <at user_id=\"ou_human\">Alice</at> please review", bots)
+	if msgType != larkim.MsgTypeInteractive {
+		t.Errorf("human mention should render as card; got %s", msgType)
+	}
+	if !strings.Contains(body, "ou_human") || !strings.Contains(body, "at id=") {
+		t.Errorf("card body must convert the at-tag to card syntax; got %s", body)
+	}
+	if strings.Contains(body, "at user_id=") {
+		t.Errorf("card body must not keep text at-tags; got %s", body)
+	}
+
+	// Mixed bot + human mention: bot wins, text it is.
+	msgType, _ = buildReplyContent("<at user_id=\"ou_peer_bot\">mac-c</at> <at user_id=\"ou_human\">Alice</at>", bots)
+	if msgType != larkim.MsgTypeText {
+		t.Errorf("mixed bot+human mention must degrade to MsgTypeText; got %s", msgType)
+	}
+}
+
+// TestBotMentionOpenIDs: the bot set is derived from peer_bots aliases
+// resolved through mention_map entries.
+func TestBotMentionOpenIDs(t *testing.T) {
+	p := &Platform{
+		platformName: "feishu",
+		peerBots:     map[string]string{"cli_peer": "mac-c"},
+		mentionMap: map[string]string{
+			"mac-c": "ou_peer_bot",
+			"alice": "ou_human",
+			"loose": "", // empty entry ignored
+		},
+	}
+	got := p.botMentionOpenIDs()
+	if len(got) != 1 || !got["ou_peer_bot"] {
+		t.Fatalf("botMentionOpenIDs() = %v, want {ou_peer_bot}", got)
 	}
 }
 
