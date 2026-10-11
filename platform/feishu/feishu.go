@@ -3319,7 +3319,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	}
 
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
-	msgType, msgBody := buildReplyContent(content)
+	msgType, msgBody := buildReplyContent(content, p.botMentionOpenIDs())
 
 	if !p.shouldUseThreadOrReplyAPI(rc) {
 		return p.sendNewMessageToChat(ctx, rc, msgType, msgBody)
@@ -3341,7 +3341,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 	}
 
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
-	msgType, msgBody := buildReplyContent(content)
+	msgType, msgBody := buildReplyContent(content, p.botMentionOpenIDs())
 	return p.sendNewMessageToChat(ctx, rc, msgType, msgBody)
 }
 
@@ -3573,15 +3573,24 @@ func detectMimeType(data []byte) string {
 	return "image/png"
 }
 
-func buildReplyContent(content string) (msgType string, body string) {
+func buildReplyContent(content string, botOpenIDs map[string]bool) (msgType string, body string) {
 	// Feishu does not generate mention events for <at> tags in card/post
-	// messages sent by bots. Force MsgTypeText when a real mention is present
-	// (resolved to an <at user_id="..."> or <at id=...> tag) so Feishu
-	// recognizes it and notifies the target bot. Checking the resolved tag
-	// instead of a bare "@" avoids false positives on email addresses, URLs,
-	// and escaped characters.
-	hasMention := strings.Contains(content, `<at user_id=`) || strings.Contains(content, `<at id=`)
-	if !containsMarkdown(content) || hasMention {
+	// messages sent by bots. Route by mention target type: a mention whose
+	// target is a peer bot must degrade to MsgTypeText or the bot never
+	// receives the message. Mentions targeting humans only render fine in
+	// cards (text at-tags are converted to the card at-tag below), so
+	// markdown rendering is preserved for the common human-mention case.
+	// A nil botOpenIDs keeps the legacy conservative behavior: any at-tag
+	// forces MsgTypeText.
+	hasAtTag := atTagOpenIDRe.MatchString(content)
+	if hasAtTag && (botOpenIDs == nil || containsBotMention(content, botOpenIDs)) {
+		b, _ := json.Marshal(map[string]string{"text": content})
+		return larkim.MsgTypeText, string(b)
+	}
+	if hasAtTag {
+		content = convertTextAtTagsToCard(content)
+	}
+	if !containsMarkdown(content) {
 		b, _ := json.Marshal(map[string]string{"text": content})
 		return larkim.MsgTypeText, string(b)
 	}
@@ -3593,6 +3602,52 @@ func buildReplyContent(content string) (msgType string, body string) {
 		return larkim.MsgTypePost, buildPostMdJSON(content)
 	}
 	return larkim.MsgTypeInteractive, buildCardJSON(sanitizeMarkdownURLs(preprocessFeishuMarkdown(content)))
+}
+
+// atTagOpenIDRe matches both text at-tags (<at user_id="ou_x">Name</at>) and
+// card at-tags (<at id=ou_x> / <at id="ou_x"></at>), quoted or not.
+var atTagOpenIDRe = regexp.MustCompile(`<(?:at user_id|at id)\s*=\s*"?([^"\s>]+)"?[^>]*>`)
+
+// textAtTagRe matches a resolved text-format at-tag with its display name,
+// capturing the open_id.
+var textAtTagRe = regexp.MustCompile(`<at user_id="([^"]+)">[^<]*</at>`)
+
+// containsBotMention reports whether any at-tag in content targets an
+// open_id in the given bot set.
+func containsBotMention(content string, botOpenIDs map[string]bool) bool {
+	for _, m := range atTagOpenIDRe.FindAllStringSubmatch(content, -1) {
+		if botOpenIDs[m[1]] {
+			return true
+		}
+	}
+	return false
+}
+
+// convertTextAtTagsToCard rewrites text-format at-tags into the card markdown
+// at-tag form (<at id="ou_x"></at>), which renders the member display name.
+func convertTextAtTagsToCard(content string) string {
+	return textAtTagRe.ReplaceAllString(content, `<at id="$1"></at>`)
+}
+
+// botMentionOpenIDs returns the open_ids of peer bots: peer_bots maps an
+// app_id to its friendly alias, and mention_map maps that alias to the bot's
+// open_id. Bot mentions must degrade to MsgTypeText (see buildReplyContent).
+// Returns nil when peer_bots is not configured, which makes buildReplyContent
+// keep the legacy behavior (any at-tag degrades to text) since bot vs human
+// targets cannot be distinguished.
+func (p *Platform) botMentionOpenIDs() map[string]bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	set := make(map[string]bool)
+	for _, alias := range p.peerBots {
+		if oid, ok := p.mentionMap[alias]; ok && oid != "" {
+			set[oid] = true
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
 }
 
 // hasComplexMarkdown detects code blocks or tables that require card rendering.
