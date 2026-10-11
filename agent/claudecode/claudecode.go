@@ -410,9 +410,19 @@ func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	if models := a.configuredModels(); len(models) > 0 {
 		return models
 	}
+	if picker, replace, ok := a.modelPickerOptions(); ok {
+		if replace {
+			return picker
+		}
+		return append(defaultClaudeModels(), picker...)
+	}
 	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {
 		return models
 	}
+	return defaultClaudeModels()
+}
+
+func defaultClaudeModels() []core.ModelOption {
 	return []core.ModelOption{
 		{Name: "sonnet", Desc: "Claude Sonnet (balanced)"},
 		{Name: "sonnet[1m]", Desc: "Claude Sonnet (1M context)"},
@@ -420,6 +430,59 @@ func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 		{Name: "opus[1m]", Desc: "Claude Opus (1M context)"},
 		{Name: "haiku", Desc: "Claude Haiku (fastest)"},
 	}
+}
+
+// modelPickerOptions reads the aggregated model list written by model managers
+// (e.g. CC Switch aggregation mode) into settings.json under modelPicker.options.
+// This keeps the headless /model card consistent with the interactive CLI picker.
+func (a *Agent) modelPickerOptions() (models []core.ModelOption, replaceBuiltIn bool, ok bool) {
+	path := claudeSettingsPath()
+	if path == "" {
+		return nil, false, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, false
+	}
+	var settings struct {
+		ModelPicker struct {
+			Options []struct {
+				Model       string `json:"model"`
+				Label       string `json:"label"`
+				Description string `json:"description"`
+			} `json:"options"`
+			ReplaceBuiltInOptions bool `json:"replaceBuiltInOptions"`
+		} `json:"modelPicker"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		slog.Debug("claudecode: failed to parse settings.json", "error", err)
+		return nil, false, false
+	}
+	for _, o := range settings.ModelPicker.Options {
+		if o.Model == "" {
+			continue
+		}
+		desc := o.Label
+		if desc == "" {
+			desc = o.Description
+		}
+		models = append(models, core.ModelOption{Name: o.Model, Desc: desc})
+	}
+	if len(models) == 0 {
+		return nil, false, false
+	}
+	return models, settings.ModelPicker.ReplaceBuiltInOptions, true
+}
+
+func claudeSettingsPath() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return filepath.Join(dir, "settings.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "settings.json")
 }
 
 func (a *Agent) fetchModelsFromAPI(ctx context.Context) []core.ModelOption {
