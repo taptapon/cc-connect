@@ -407,25 +407,27 @@ func (a *Agent) configuredModels() []core.ModelOption {
 }
 
 func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
+	picker, replace, ok := a.modelPickerOptions()
+	if ok && replace {
+		return picker
+	}
 	a.mu.RLock()
 	minimaxModels := core.GetMiniMaxProviderModels(a.providers, a.activeIdx)
 	a.mu.RUnlock()
 	if len(minimaxModels) > 0 {
 		return minimaxModels
 	}
-	if models := a.configuredModels(); len(models) > 0 {
-		return models
+	models := a.configuredModels()
+	if len(models) == 0 {
+		models = a.fetchModelsFromAPI(ctx)
 	}
-	if picker, replace, ok := a.modelPickerOptions(); ok {
-		if replace {
-			return picker
-		}
-		return append(defaultClaudeModels(), picker...)
+	if len(models) == 0 {
+		models = defaultClaudeModels()
 	}
-	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {
-		return models
+	if ok {
+		models = append(models, picker...)
 	}
-	return defaultClaudeModels()
+	return models
 }
 
 func defaultClaudeModels() []core.ModelOption {
