@@ -145,6 +145,18 @@ type PreviewFinishPreference interface {
 	KeepPreviewOnFinish() bool
 }
 
+// FinalTextDetacher is an optional interface for platforms that must NOT
+// deliver certain final texts through the in-place preview update. Feishu is
+// the motivating case: it only fires mention events for <at> tags inside
+// MsgTypeText messages, so a final reply mentioning a peer bot has to be sent
+// as a fresh plain-text message (via the normal Send path, where the
+// bot-mention degradation lives) instead of being patched into the streaming
+// interactive card. When ShouldDetachForFinalText returns true, finish()
+// deletes the preview and reports false so the engine falls back to Send.
+type FinalTextDetacher interface {
+	ShouldDetachForFinalText(replyCtx, previewHandle any, finalText string) bool
+}
+
 func newStreamPreview(cfg StreamPreviewCfg, p Platform, replyCtx any, ctx context.Context, transform func(string) string) *streamPreview {
 	return &streamPreview{
 		cfg:       cfg,
@@ -444,6 +456,21 @@ func (sp *streamPreview) finish(finalText, statusFooter string) bool {
 	keepPreview := false
 	if pref, ok := sp.platform.(PreviewFinishPreference); ok {
 		keepPreview = pref.KeepPreviewOnFinish()
+	}
+
+	// Platform opted this final text out of in-place preview delivery (e.g.
+	// Feishu bot mentions need a fresh MsgTypeText message). Delete the
+	// preview and return false so the engine sends it via the normal path.
+	if keepPreview {
+		if detacher, ok := sp.platform.(FinalTextDetacher); ok {
+			if detacher.ShouldDetachForFinalText(sp.replyCtx, sp.previewMsgID, finalText) {
+				slog.Debug("stream preview finish: detaching for final text (platform request)")
+				if cleaner, ok := sp.platform.(PreviewCleaner); ok {
+					_ = cleaner.DeletePreviewMessage(sp.ctx, sp.previewMsgID)
+				}
+				return false
+			}
+		}
 	}
 
 	// If platform wants to delete the preview and send fresh, let it.
