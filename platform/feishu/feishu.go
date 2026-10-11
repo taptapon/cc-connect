@@ -150,18 +150,18 @@ type Platform struct {
 	// Issue #1618: previous behavior treated botOpenID=="" as "filter off", which
 	// silently turned the bot into a loud responder for the rest of the process
 	// lifetime when the bot-info API failed.
-	groupFilterDegraded     bool
-	groupFilterDegradedAt   time.Time
-	groupFilterDegradedErr  string
-	groupFilterRetryCancel  context.CancelFunc
-	groupFilterRetryStop    chan struct{}
-	peerBots                map[string]string // app_id -> friendly alias, for quoted-reply attribution
-	mentionMap       map[string]string // agent name -> open_id (for outbound @ resolution)
-	userNameCache    sync.Map          // open_id -> display name
-	chatNameCache    sync.Map          // chat_id -> chat name
-	chatMemberCache  sync.Map          // chatID -> *chatMemberEntry
-	recalledMu       sync.Mutex
-	recalledMsgIDs   map[string]time.Time // message_id -> recall time, short TTL race guard
+	groupFilterDegraded    bool
+	groupFilterDegradedAt  time.Time
+	groupFilterDegradedErr string
+	groupFilterRetryCancel context.CancelFunc
+	groupFilterRetryStop   chan struct{}
+	peerBots               map[string]string // app_id -> friendly alias, for quoted-reply attribution
+	mentionMap             map[string]string // agent name -> open_id (for outbound @ resolution)
+	userNameCache          sync.Map          // open_id -> display name
+	chatNameCache          sync.Map          // chat_id -> chat name
+	chatMemberCache        sync.Map          // chatID -> *chatMemberEntry
+	recalledMu             sync.Mutex
+	recalledMsgIDs         map[string]time.Time // message_id -> recall time, short TTL race guard
 	// Webhook mode fields (for Lark international version)
 	server       *http.Server
 	port         string
@@ -535,6 +535,25 @@ func (p *Platform) getBotOpenID() string {
 
 func (p *Platform) KeepPreviewOnFinish() bool {
 	return p.useInteractiveCard
+}
+
+// ShouldDetachForFinalText implements core.FinalTextDetacher. The streaming
+// preview card can never deliver a bot mention (Feishu only fires mention
+// events for <at> tags inside MsgTypeText), so when the final reply mentions
+// a peer bot we detach: the engine deletes the preview card and re-sends the
+// text through the normal Send/Reply path, where mention resolution and the
+// bot-mention → MsgTypeText degradation (buildReplyContent) apply.
+func (p *Platform) ShouldDetachForFinalText(replyCtx, previewHandle any, finalText string) bool {
+	// Cheap pre-check: bare @ (alias form) or an already-resolved at-tag.
+	if !strings.Contains(finalText, "@") && !atTagOpenIDRe.MatchString(finalText) {
+		return false
+	}
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		return false
+	}
+	resolved := p.resolveMentionsInContent(context.Background(), rc.chatID, finalText)
+	return containsBotMention(resolved, p.botMentionOpenIDs())
 }
 
 func (p *Platform) Start(handler core.MessageHandler) error {
