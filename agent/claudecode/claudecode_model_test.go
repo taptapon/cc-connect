@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -82,6 +84,10 @@ func TestAvailableModels_FallbackUsesRollingFableAlias(t *testing.T) {
 	// call, independent of the developer's environment.
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_BASE_URL", "")
+	// Isolate CLAUDE_CONFIG_DIR: a developer's settings.json may carry a
+	// modelPicker block (CC Switch aggregation), which takes precedence over
+	// the hardcoded fallback and would mask what this test asserts.
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 
 	a := &Agent{activeIdx: -1}
 	got := a.AvailableModels(context.Background())
@@ -130,6 +136,10 @@ func TestAvailableModels_DynamicAPIBeatsFallback(t *testing.T) {
 	var hits int32
 	srv := modelsAPIStub(t, &hits)
 
+	// A modelPicker block in the developer's settings.json would short-circuit
+	// before the API probe; isolate it as the picker tests do.
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+
 	a := &Agent{
 		providers: []core.ProviderConfig{{APIKey: "test-key", BaseURL: srv.URL}},
 		activeIdx: 0,
@@ -142,5 +152,80 @@ func TestAvailableModels_DynamicAPIBeatsFallback(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&hits); n != 1 {
 		t.Fatalf("API consulted %d time(s), want exactly 1", n)
+	}
+}
+
+func TestModelPickerOptions_FromSettings(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	settings := `{
+	  "modelPicker": {
+	    "options": [
+	      {"model": "ccs-claude-glm[1M]", "label": "glm (zhipu)", "description": "glm-5.3 [1M]"},
+	      {"model": "ccs-claude-ds", "description": "deepseek-flash (1M)"}
+	    ],
+	    "replaceBuiltInOptions": true
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{}
+	opts, replace, ok := a.modelPickerOptions()
+	if !ok || !replace {
+		t.Fatalf("modelPickerOptions() ok=%v replace=%v, want true true", ok, replace)
+	}
+	if len(opts) != 2 {
+		t.Fatalf("got %d options, want 2", len(opts))
+	}
+	if opts[0].Name != "ccs-claude-glm[1M]" || opts[0].Desc != "glm (zhipu)" {
+		t.Fatalf("opts[0] = %+v", opts[0])
+	}
+	if opts[1].Desc != "deepseek-flash (1M)" {
+		t.Fatalf("opts[1] = %+v, want label fallback to description", opts[1])
+	}
+}
+
+func TestModelPickerOptions_MissingOrMalformed(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	a := &Agent{}
+	if _, _, ok := a.modelPickerOptions(); ok {
+		t.Fatal("expected ok=false when settings.json is missing")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := a.modelPickerOptions(); ok {
+		t.Fatal("expected ok=false for malformed settings.json")
+	}
+}
+
+func TestAvailableModels_PrefersModelPickerOverFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	settings := `{"modelPicker":{"options":[{"model":"ccs-x","label":"X (zhipu)"}],"replaceBuiltInOptions":true}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{}
+	models := a.AvailableModels(context.Background())
+	if len(models) != 1 || models[0].Name != "ccs-x" {
+		t.Fatalf("AvailableModels() = %+v, want single picker option", models)
+	}
+}
+
+func TestAvailableModels_FallsBackToBuiltinsWithoutPicker(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	a := &Agent{}
+	models := a.AvailableModels(context.Background())
+	if len(models) == 0 || models[0].Name != "sonnet" {
+		t.Fatalf("AvailableModels() = %+v, want builtin fallback", models)
 	}
 }
