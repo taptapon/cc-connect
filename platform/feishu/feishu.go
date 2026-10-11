@@ -558,6 +558,25 @@ func (p *Platform) KeepPreviewOnFinish() bool {
 	return p.useInteractiveCard
 }
 
+// ShouldDetachForFinalText implements core.FinalTextDetacher. The streaming
+// preview card can never deliver a bot mention (Feishu only fires mention
+// events for <at> tags inside MsgTypeText), so when the final reply mentions
+// a peer bot we detach: the engine deletes the preview card and re-sends the
+// text through the normal Send/Reply path, where mention resolution and the
+// bot-mention → MsgTypeText degradation (buildReplyContent) apply.
+func (p *Platform) ShouldDetachForFinalText(replyCtx, previewHandle any, finalText string) bool {
+	// Cheap pre-check: bare @ (alias form) or an already-resolved at-tag.
+	if !strings.Contains(finalText, "@") && !atTagOpenIDRe.MatchString(finalText) {
+		return false
+	}
+	rc, ok := replyCtx.(replyContext)
+	if !ok {
+		return false
+	}
+	resolved := p.resolveMentionsInContent(context.Background(), rc.chatID, finalText)
+	return containsBotMention(resolved, p.botMentionOpenIDs())
+}
+
 func (p *Platform) Start(handler core.MessageHandler) error {
 	p.mu.Lock()
 	p.handler = handler

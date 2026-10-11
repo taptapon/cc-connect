@@ -2480,3 +2480,41 @@ func TestDispatchMessagePostWithFiles(t *testing.T) {
 		t.Fatal("timed out waiting for dispatched message")
 	}
 }
+
+// TestShouldDetachForFinalText: final replies mentioning a peer bot must
+// detach from the streaming preview card (Feishu only fires mention events
+// for <at> tags inside MsgTypeText); human mentions and plain text keep the
+// in-place card update.
+func TestShouldDetachForFinalText(t *testing.T) {
+	p := &Platform{
+		platformName:    "feishu",
+		resolveMentions: true,
+		peerBots:        map[string]string{"cli_peer": "mac-c"},
+		mentionMap: map[string]string{
+			"mac-c": "ou_peer_bot",
+			"alice": "ou_human",
+		},
+	}
+	rc := replyContext{chatID: "oc_test_group"}
+
+	// No @ at all: keep preview.
+	if p.ShouldDetachForFinalText(rc, nil, "plain report, no mention") {
+		t.Error("plain text must not detach")
+	}
+	// Bare @ that resolves to nothing (email-like): keep preview.
+	if p.ShouldDetachForFinalText(rc, nil, "mail me at a@b.com please") {
+		t.Error("non-mention @ must not detach")
+	}
+	// Bot mention alias: must detach.
+	if !p.ShouldDetachForFinalText(rc, nil, "done @mac-c your turn") {
+		t.Error("bot mention must detach from preview")
+	}
+	// Human mention only: keep preview (card renders it fine).
+	if p.ShouldDetachForFinalText(rc, nil, "@alice please review") {
+		t.Error("human mention must not detach")
+	}
+	// Already-resolved bot at-tag: must detach.
+	if !p.ShouldDetachForFinalText(rc, nil, `<at user_id="ou_peer_bot">mac-c</at> done`) {
+		t.Error("resolved bot at-tag must detach")
+	}
+}
