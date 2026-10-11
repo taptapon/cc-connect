@@ -180,6 +180,22 @@ func (s *TimerStore) MarkFired(id string, err error) {
 	}
 }
 
+// MarkError records an execution error on an already-fired job, leaving its
+// Fired state untouched (used when Fired is persisted before execution).
+func (s *TimerStore) MarkError(id string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.jobs {
+		if j.ID == id {
+			j.LastError = err.Error()
+			if saveErr := s.save(); saveErr != nil {
+				slog.Warn("timer: failed to save after mark error", "error", saveErr)
+			}
+			return
+		}
+	}
+}
+
 func (s *TimerStore) List() []*TimerJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -406,6 +422,13 @@ func (ts *TimerScheduler) executeJob(jobID string) {
 		return
 	}
 
+	// Mark fired BEFORE executing: a one-shot timer must fire exactly once
+	// even if the daemon dies mid-run. The old mark-after-execute order let
+	// a job whose exec restarts the daemon (or any crash mid-run) stay
+	// unfired on disk, so every restart re-fired it — a restart/notification
+	// loop that only ended once the job went stale (>5min overdue).
+	ts.store.MarkFired(jobID, nil)
+
 	slog.Info("timer: executing job", "id", jobID, "project", job.Project, "prompt", truncateStr(job.Prompt, 60))
 
 	done := make(chan error, 1)
@@ -425,9 +448,8 @@ func (ts *TimerScheduler) executeJob(jobID string) {
 		err = <-done
 	}
 
-	ts.store.MarkFired(jobID, err)
-
 	if err != nil {
+		ts.store.MarkError(jobID, err)
 		slog.Error("timer: job failed", "id", jobID, "error", err)
 	} else {
 		slog.Info("timer: job completed", "id", jobID)

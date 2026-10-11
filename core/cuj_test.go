@@ -1671,14 +1671,11 @@ func TestCUJ_E3_CronSurvivesRestart(t *testing.T) {
 // closes that gap with a real engine + cujAgent + ReplyContextReconstructor
 // platform.
 func TestCUJ_E4_TimerFiresAndDeliversToAgentAndUser(t *testing.T) {
-	// Flaky: the timer fires at 200ms and the test waits 3s for the store
-	// to be marked Fired, but the scheduler tick + JSON store write +
-	// cleanup loses that race both locally and on CI (observed in PR
-	// #1348 CI: "timer was not marked as Fired after execution" after
-	// only 0.21s). Skip unconditionally until the race is fixed at the
-	// scheduler layer — TODO(#1348-followup): make ExecuteTimerJob mark
-	// Fired synchronously before returning.
-	t.Skip("CUJ-E4: flaky timer scheduler race; tracking for follow-up")
+	// Previously skipped as flaky: the scheduler marked Fired only AFTER
+	// execution finished, so a slow store write lost the race with the
+	// assertion. The scheduler now persists Fired synchronously before
+	// executing the job, which closes that race (and the restart-refire
+	// loop it caused).
 	// Use cujReplyCtxPlatform because ExecuteTimerJob requires the platform
 	// to implement ReplyContextReconstructor — that's how it rebuilds a
 	// reply target from just a sessionKey at fire-time.
@@ -1777,6 +1774,91 @@ func TestCUJ_E4_TimerFiresAndDeliversToAgentAndUser(t *testing.T) {
 	// notification "⏰ ..." OR the agent reply).
 	if len(plat.getSent()) == 0 {
 		t.Fatalf("timer fired but user saw no platform message at all")
+	}
+
+	// The scheduler records the execution error (the stub agent returns one)
+	// via MarkError AFTER the engine call returns — a trailing store write
+	// that races TempDir cleanup if we return immediately. Wait for it to
+	// land; timeout is harmless (only means the engine returned nil).
+	storeFile := timerDir + "/timers/jobs.json"
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(storeFile); err == nil && strings.Contains(string(data), "last_error") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Regression (2026-10-11 incident): a shell timer whose exec restarts the
+// daemon used to stay unfired on disk — the scheduler marked Fired only
+// AFTER execution, and the exec killed the daemon before that. Every
+// restart then re-fired the job (notification + daemon restart, ~every
+// 10s) until it went stale. The store must already show fired=true while
+// the exec command runs.
+func TestCUJ_E4b_ShellJobFiredBeforeExec(t *testing.T) {
+	dir := t.TempDir()
+	plat := &cujReplyCtxPlatform{stubPlatformEngine: &stubPlatformEngine{n: "test"}}
+	agent := &cujAgent{}
+	e := NewEngine("test", agent, []Platform{plat}, dir+"/sessions.json", LangEnglish)
+
+	timerDir := dir + "/timer"
+	if err := os.MkdirAll(timerDir, 0o755); err != nil {
+		t.Fatalf("mkAll timer dir: %v", err)
+	}
+	store, err := NewTimerStore(timerDir)
+	if err != nil {
+		t.Fatalf("NewTimerStore: %v", err)
+	}
+	sched := NewTimerScheduler(store)
+	sched.RegisterEngine("test", e)
+	e.SetTimerScheduler(sched)
+	if err := sched.Start(); err != nil {
+		t.Fatalf("sched.Start: %v", err)
+	}
+	defer sched.Stop()
+
+	// The exec job inspects the store file at execution time and records
+	// whether its own job is already marked fired. (NewTimerStore appends
+	// its own "timers" segment to the data dir.)
+	storePath := timerDir + "/timers/jobs.json"
+	outPath := dir + "/observed.txt"
+	exec := fmt.Sprintf(`grep -q '"fired": true' %q && echo marked > %q || echo unmarked > %q`, storePath, outPath, outPath)
+	job := &TimerJob{
+		ID:          "shell-fired-first",
+		Project:     "test",
+		SessionKey:  "test:erin",
+		ScheduledAt: time.Now().Add(200 * time.Millisecond),
+		Exec:        exec,
+		Mute:        true, // keep the ⏰ notification out of the assertion
+		CreatedAt:   time.Now(),
+	}
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	// Wait for the exec command to run and leave its observation.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(outPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("shell job never ran")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("shell job never ran: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "marked" {
+		t.Fatalf("store showed %q at exec time — job was not marked fired before execution", got)
+	}
+	stored := store.Get("shell-fired-first")
+	if stored == nil || !stored.Fired {
+		t.Fatalf("shell job not marked fired after execution")
 	}
 }
 
