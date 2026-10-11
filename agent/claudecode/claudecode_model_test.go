@@ -133,3 +133,23 @@ func TestAvailableModels_FallsBackToBuiltinsWithoutPicker(t *testing.T) {
 		t.Fatalf("AvailableModels() = %+v, want builtin fallback", models)
 	}
 }
+
+func TestAvailableModels_PickerOverridesConfiguredModels(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	settings := `{"modelPicker":{"options":[{"model":"ccs-y","label":"Y (zhipu)"}],"replaceBuiltInOptions":true}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{
+		providers: []core.ProviderConfig{
+			{Name: "injected", Models: []core.ModelOption{{Name: "sonnet", Desc: "Claude Sonnet (balanced)"}}},
+		},
+		activeIdx: 0,
+	}
+	models := a.AvailableModels(context.Background())
+	if len(models) != 1 || models[0].Name != "ccs-y" {
+		t.Fatalf("AvailableModels() = %+v, want picker to override configured models", models)
+	}
+}

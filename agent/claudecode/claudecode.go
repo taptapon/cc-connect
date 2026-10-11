@@ -407,19 +407,21 @@ func (a *Agent) configuredModels() []core.ModelOption {
 }
 
 func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
-	if models := a.configuredModels(); len(models) > 0 {
-		return models
+	picker, replace, ok := a.modelPickerOptions()
+	if ok && replace {
+		return picker
 	}
-	if picker, replace, ok := a.modelPickerOptions(); ok {
-		if replace {
-			return picker
-		}
-		return append(defaultClaudeModels(), picker...)
+	models := a.configuredModels()
+	if len(models) == 0 {
+		models = a.fetchModelsFromAPI(ctx)
 	}
-	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {
-		return models
+	if len(models) == 0 {
+		models = defaultClaudeModels()
 	}
-	return defaultClaudeModels()
+	if ok {
+		models = append(models, picker...)
+	}
+	return models
 }
 
 func defaultClaudeModels() []core.ModelOption {
