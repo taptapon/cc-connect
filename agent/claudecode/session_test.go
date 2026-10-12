@@ -1310,6 +1310,118 @@ func TestTailUsageFromTranscript_NoAssistantUsage(t *testing.T) {
 	}
 }
 
+// TestAlignContextWindowPrefersSessionModel is the regression test for the
+// gateway model-rewrite bug: a session configured as "…GLM-5.3-Flash[1m]"
+// records plain "GLM-5.3-Flash" in its transcript (the gateway strips the
+// [1m] suffix from the API response), so a transcript-recovered usage
+// snapshot derived its context window from the wrong name — 200k instead of
+// 1M — and the reply footer inflated ctx % from ~18% to ~91%. The init
+// event's model must win whenever it is known.
+func TestAlignContextWindowPrefersSessionModel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Transcript records the gateway-rewritten model name — no [1m] suffix.
+	path := writeFixture(t, []string{
+		`{"type":"assistant","message":{"model":"GLM-5.3-Flash","usage":{"input_tokens":668,"cache_read_input_tokens":181500}}}`,
+	})
+
+	newSession := func() *claudeSession {
+		return &claudeSession{events: make(chan core.Event, 8), ctx: ctx, workDir: t.TempDir()}
+	}
+
+	t.Run("session model with [1m] overrides transcript model", func(t *testing.T) {
+		cs := newSession()
+		cs.sessionID.Store("align-sess")
+		cs.alive.Store(true)
+		cs.activeModel.Store("ccs-claude-pdefaul--GLM-5.3-Flash[1m]")
+		cs.transcriptOverride = path
+
+		// Empty assistant usage (gateways strip it) → transcript path runs.
+		cs.handleAssistant(map[string]any{
+			"type": "assistant",
+			"message": map[string]any{
+				"model": "GLM-5.3-Flash",
+				"usage": map[string]any{"input_tokens": float64(0), "output_tokens": float64(0)},
+			},
+		})
+		cs.handleResult(map[string]any{
+			"type":       "result",
+			"result":     "done",
+			"session_id": "align-sess",
+		})
+
+		u := cs.GetContextUsage()
+		if u == nil {
+			t.Fatal("expected a transcript-recovered snapshot, got nil")
+		}
+		if u.ContextWindow != 1_000_000 {
+			t.Errorf("ContextWindow = %d, want 1_000_000 (session model has [1m]; transcript said %q)",
+				u.ContextWindow, "GLM-5.3-Flash")
+		}
+		// Token values must be untouched — only the window is re-derived.
+		if want := 668 + 181500; u.UsedTokens != want {
+			t.Errorf("UsedTokens = %d, want %d", u.UsedTokens, want)
+		}
+		if src := cs.GetUsageSource(); src != "transcript" {
+			t.Errorf("usage source = %q, want %q", src, "transcript")
+		}
+	})
+
+	t.Run("unknown session model falls back to transcript model", func(t *testing.T) {
+		cs := newSession()
+		cs.sessionID.Store("align-sess-2")
+		cs.alive.Store(true)
+		// No activeModel: init event not yet seen.
+		cs.transcriptOverride = path
+
+		cs.handleResult(map[string]any{
+			"type":       "result",
+			"result":     "done",
+			"session_id": "align-sess-2",
+		})
+
+		u := cs.GetContextUsage()
+		if u == nil {
+			t.Fatal("expected a transcript-recovered snapshot, got nil")
+		}
+		if u.ContextWindow != 200_000 {
+			t.Errorf("ContextWindow = %d, want 200_000 (no session model; transcript model %q has no [1m])",
+				u.ContextWindow, "GLM-5.3-Flash")
+		}
+	})
+
+	t.Run("attach-time recovery aligns too", func(t *testing.T) {
+		cs := newSession()
+		cs.transcriptOverride = path
+
+		// handleSystem stores the init model BEFORE running the attach-time
+		// recovery, mirroring the real event order on --resume.
+		cs.handleSystem(map[string]any{
+			"type":       "system",
+			"subtype":    "init",
+			"model":      "ccs-claude-pdefaul--GLM-5.3-Flash[1m]",
+			"session_id": "align-sess-3",
+		})
+		// Drain the EventText emitted for the session id.
+		for len(cs.events) > 0 {
+			<-cs.events
+		}
+
+		u := cs.GetContextUsage()
+		if u == nil {
+			t.Fatal("expected a transcript-recovered snapshot, got nil")
+		}
+		if u.ContextWindow != 1_000_000 {
+			t.Errorf("ContextWindow = %d, want 1_000_000 (attach recovery must use the init model)",
+				u.ContextWindow)
+		}
+		if src := cs.GetUsageSource(); src != "transcript-recovered" {
+			t.Errorf("usage source = %q, want %q", src, "transcript-recovered")
+		}
+	})
+}
+
 // TestHandleResultUsesTranscriptTailWhenAssistantEmpty is the end-to-end
 // reproduction of the reported bug: MiniMax-M3 streams an EMPTY usage block on
 // every assistant event, so handleAssistant writes nothing. The result event's
