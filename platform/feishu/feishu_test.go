@@ -2509,9 +2509,19 @@ func TestShouldDetachForFinalText(t *testing.T) {
 	if !p.ShouldDetachForFinalText(rc, nil, "done @mac-c your turn") {
 		t.Error("bot mention must detach from preview")
 	}
-	// Human mention only: keep preview (card renders it fine).
-	if p.ShouldDetachForFinalText(rc, nil, "@alice please review") {
-		t.Error("human mention must not detach")
+	// Human mention only: MUST detach too — the streaming card never resolves
+	// @name and cannot fire a mention event, so a human @ left in the card is
+	// silently lost (2026-10-12 mac-c regression).
+	if !p.ShouldDetachForFinalText(rc, nil, "@alice please review") {
+		t.Error("human mention must detach so the text path resolves it")
+	}
+	// Unresolvable @ (not a member, not in mention_map): keep preview.
+	if p.ShouldDetachForFinalText(rc, nil, "@nobody-here hello") {
+		t.Error("unresolvable @ must not detach")
+	}
+	// Already-resolved human at-tag: must detach.
+	if !p.ShouldDetachForFinalText(rc, nil, `<at user_id="ou_human">alice</at> review`) {
+		t.Error("resolved human at-tag must detach")
 	}
 	// Already-resolved bot at-tag: must detach.
 	if !p.ShouldDetachForFinalText(rc, nil, `<at user_id="ou_peer_bot">mac-c</at> done`) {
