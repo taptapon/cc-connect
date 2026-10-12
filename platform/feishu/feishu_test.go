@@ -2518,3 +2518,34 @@ func TestShouldDetachForFinalText(t *testing.T) {
 		t.Error("resolved bot at-tag must detach")
 	}
 }
+
+func TestAddChatMember(t *testing.T) {
+	// Regression for 2026-10-12 mac-c: the chat-members iterator re-yields the
+	// same member repeatedly; the old "any repeat wipes the ID" dedup turned
+	// every member map into {"name": ""}, silently disabling mention
+	// resolution (layer 1) for all chats.
+	members := make(map[string]string)
+
+	addChatMember(members, "jianghong", "ou_user1")
+	if members["jianghong"] != "ou_user1" {
+		t.Fatalf("first sighting must record the id, got %q", members["jianghong"])
+	}
+
+	// Same member_id again (repeated page / non-advancing iterator): keep it.
+	addChatMember(members, "jianghong", "ou_user1")
+	if members["jianghong"] != "ou_user1" {
+		t.Fatalf("repeated page must NOT wipe the id, got %q", members["jianghong"])
+	}
+
+	// A DIFFERENT member with the same display name: ambiguous, wipe.
+	addChatMember(members, "jianghong", "ou_user2")
+	if members["jianghong"] != "" {
+		t.Fatalf("genuine duplicate name must be ambiguous, got %q", members["jianghong"])
+	}
+
+	// Distinct names stay independent.
+	addChatMember(members, "alice", "ou_alice")
+	if members["alice"] != "ou_alice" || members["jianghong"] != "" {
+		t.Fatalf("distinct members must not interfere: %v", members)
+	}
+}
