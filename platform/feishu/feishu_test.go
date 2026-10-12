@@ -2425,3 +2425,37 @@ func TestAddChatMember(t *testing.T) {
 		t.Fatalf("distinct members must not interfere: %v", members)
 	}
 }
+
+// Regression for 2026-10-12 mac-c: a plain-text message mentioning a human
+// used to get its text-syntax at-tag converted to the card variant and then
+// sent as MsgTypeText — Feishu mangled it into <at user_id=""></at> and the
+// mention was lost. Text messages must keep the text syntax verbatim.
+func TestBuildReplyContent_HumanMentionPlainTextKeepsTextSyntax(t *testing.T) {
+	content := `开工提醒 <at user_id="ou_human123">jianghong</at> 请查收`
+	msgType, body := buildReplyContent(content, map[string]bool{"ou_botbot": true})
+
+	if msgType != larkim.MsgTypeText {
+		t.Fatalf("plain text with human mention must stay MsgTypeText, got %q", msgType)
+	}
+	// json.Marshal HTML-escapes '<' as \u003c — match on the escaped form.
+	if !strings.Contains(body, `user_id=\"ou_human123\"`) {
+		t.Fatalf("text message must keep text-syntax at-tag, got: %s", body)
+	}
+	if strings.Contains(body, `at id=`) {
+		t.Fatalf("card-syntax at-tag must NOT leak into a text message, got: %s", body)
+	}
+}
+
+// Markdown content with a human mention still converts to the card variant
+// (existing behavior: humans render fine in cards).
+func TestBuildReplyContent_HumanMentionMarkdownConvertsToCardSyntax(t *testing.T) {
+	content := "**重点** <at user_id=\"ou_human123\">jianghong</at> 请查收"
+	msgType, body := buildReplyContent(content, map[string]bool{"ou_botbot": true})
+
+	if msgType != larkim.MsgTypeInteractive {
+		t.Fatalf("markdown with human mention should go card, got %q", msgType)
+	}
+	if !strings.Contains(body, `at id=`) || !strings.Contains(body, `ou_human123`) {
+		t.Fatalf("card body must use card at-syntax, got: %s", body)
+	}
+}
