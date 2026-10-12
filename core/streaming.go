@@ -586,6 +586,19 @@ func (sp *streamPreview) appendSeparator(sep string) bool {
 	return true
 }
 
+// endsWithParagraphBreak reports whether the accumulated text already ends in
+// a paragraph break (at least two newlines, ignoring trailing spaces/tabs).
+// Callers use it to avoid stacking separators when several consecutive
+// thinking/tool boundaries occur without intervening text — without this guard
+// each boundary appended another "\n\n", producing runs of 4-12 blank lines in
+// the delivered message.
+func (sp *streamPreview) endsWithParagraphBreak() bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	trimmed := strings.TrimRight(sp.fullText, " \t")
+	return strings.HasSuffix(trimmed, "\n\n")
+}
+
 // needsDoneReaction returns true if the preview was delivered via in-place
 // UpdateMessage at least once, meaning the user only received a push for the
 // initial SendPreviewStart and subsequent updates were silent. In this case a

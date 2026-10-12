@@ -609,3 +609,61 @@ func TestStreamPreview_UnfreezeIdempotent(t *testing.T) {
 		t.Fatal("canPreview() = false after no-op unfreeze, want true")
 	}
 }
+
+// TestEndsWithParagraphBreak covers the guard that stops consecutive
+// thinking/tool boundaries from stacking blank lines in quiet mode
+// (regression: delivered messages showed runs of 4-12 blank lines).
+func TestEndsWithParagraphBreak(t *testing.T) {
+	newSP := func(text string) *streamPreview {
+		sp := &streamPreview{fullText: text}
+		sp.cfg.Enabled = true
+		return sp
+	}
+
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"empty", "", false},
+		{"plain sentence", "句子结束。", false},
+		{"single newline", "句子。\n", false},
+		{"exactly one paragraph break", "句子。\n\n", true},
+		{"stacked breaks", "句子。\n\n\n\n", true},
+		{"trailing spaces after break", "句子。\n\n  ", true},
+		{"trailing tab after break", "句子。\n\n\t", true},
+		{"break then more text", "句子。\n\n下一段", false},
+	}
+	for _, tc := range cases {
+		if got := newSP(tc.text).endsWithParagraphBreak(); got != tc.want {
+			t.Errorf("%s: endsWithParagraphBreak(%q) = %v, want %v", tc.name, tc.text, got, tc.want)
+		}
+	}
+}
+
+// TestAppendSeparator_NoStacking asserts that the guard + appendSeparator
+// combination keeps at most one paragraph break across repeated boundaries.
+func TestAppendSeparator_NoStacking(t *testing.T) {
+	sp := &streamPreview{}
+	sp.cfg.Enabled = true
+	sp.fullText = "第一段。"
+
+	// First boundary: guard is false, separator is added.
+	if sp.endsWithParagraphBreak() {
+		t.Fatal("fresh text must not report a paragraph break")
+	}
+	if !sp.appendSeparator("\n\n") {
+		t.Fatal("appendSeparator should succeed on non-empty text")
+	}
+
+	// Subsequent boundaries (no text in between): guard short-circuits.
+	for i := 0; i < 5; i++ {
+		if !sp.endsWithParagraphBreak() {
+			t.Fatalf("iteration %d: expected paragraph break at end", i)
+		}
+		// engine skips appendSeparator when the guard is true
+	}
+	if sp.fullText != "第一段。\n\n" {
+		t.Errorf("separators stacked: %q", sp.fullText)
+	}
+}
