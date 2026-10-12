@@ -3627,10 +3627,18 @@ func buildReplyContent(content string, botOpenIDs map[string]bool) (msgType stri
 		b, _ := json.Marshal(map[string]string{"text": content})
 		return larkim.MsgTypeText, string(b)
 	}
-	if hasAtTag {
+	// Convert text-syntax at-tags to the card variant ONLY when the content
+	// will actually go out as card/post. A plain-text message with a human
+	// mention used to be converted anyway and then sent as MsgTypeText —
+	// Feishu's text parser rejects the card syntax (<at id=...>) and mangles
+	// the mention into <at user_id=""></at>, which renders as nothing
+	// (2026-10-12 mac-c 实测). In a text message the text syntax is the only
+	// valid form and must be kept verbatim.
+	plainText := !containsMarkdown(content)
+	if hasAtTag && !plainText {
 		content = convertTextAtTagsToCard(content)
 	}
-	if !containsMarkdown(content) {
+	if plainText {
 		b, _ := json.Marshal(map[string]string{"text": content})
 		return larkim.MsgTypeText, string(b)
 	}
