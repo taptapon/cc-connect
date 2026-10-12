@@ -553,7 +553,14 @@ func (p *Platform) ShouldDetachForFinalText(replyCtx, previewHandle any, finalTe
 		return false
 	}
 	resolved := p.resolveMentionsInContent(context.Background(), rc.chatID, finalText)
-	return containsBotMention(resolved, p.botMentionOpenIDs())
+	// Any resolved at-tag — bot OR human — must go out via the text path.
+	// The streaming card can render an at-tag but Feishu fires mention events
+	// only for MsgTypeText, and this path never runs @name resolution at all,
+	// so a human mention left in the card is silently rendered as plain text.
+	// Covers the 协作模式 "@user 汇报结果" flow (2026-10-12 mac-c: quiet mode
+	// dropped the human mention entirely). Messages with no resolvable mention
+	// keep the card (markdown preserved).
+	return atTagOpenIDRe.MatchString(resolved)
 }
 
 func (p *Platform) Start(handler core.MessageHandler) error {
