@@ -2049,6 +2049,7 @@ func (p *Platform) fetchChatMembers(ctx context.Context, chatID string) (map[str
 	if err != nil {
 		return nil, fmt.Errorf("%s: list chat members: %w", p.tag(), err)
 	}
+	seenIDs := make(map[string]bool)
 	for {
 		hasMore, member, err := iter.Next()
 		if err != nil {
@@ -2056,18 +2057,38 @@ func (p *Platform) fetchChatMembers(ctx context.Context, chatID string) (map[str
 			break
 		}
 		if member != nil && member.Name != nil && member.MemberId != nil {
-			name := *member.Name
-			if _, exists := members[name]; !exists {
-				members[name] = *member.MemberId
-			} else {
-				members[name] = ""
+			// lark SDK v3.5.3 quirk (2026-10-12 mac-c 实测): the chat-members
+			// iterator re-yields the same first page forever on single-page
+			// chats — hasMore stays true until the context deadline. Detect a
+			// non-advancing iterator (same member_id twice) and stop early
+			// instead of burning the full 10s timeout on every fetch.
+			id := *member.MemberId
+			if seenIDs[id] {
+				break
 			}
+			seenIDs[id] = true
+			addChatMember(members, *member.Name, id)
 		}
 		if !hasMore {
 			break
 		}
 	}
 	return members, nil
+}
+
+// addChatMember records one chat member in the displayName→openID map. Two
+// DIFFERENT members sharing a display name make the name ambiguous (value
+// ""); seeing the same member_id again is a repeated page, not a duplicate
+// name, and must keep the original mapping (previously any repeat wiped the
+// ID to "", which silently disabled @-mention resolution for every member).
+func addChatMember(members map[string]string, name, id string) {
+	if existing, exists := members[name]; exists {
+		if existing != id {
+			members[name] = "" // genuine duplicate display name
+		}
+		return
+	}
+	members[name] = id
 }
 
 // getChatMembers returns the cached name->openID map for a chat, fetching if needed.
