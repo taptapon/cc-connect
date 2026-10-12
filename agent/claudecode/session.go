@@ -734,6 +734,26 @@ func (cs *claudeSession) handleSystem(raw map[string]any) {
 	})
 }
 
+// alignContextWindow re-derives the context window of a transcript-recovered
+// usage snapshot from the live session model.
+//
+// Why: the transcript's per-line "model" is what the API RESPONDED with, and
+// gateways routinely rewrite it — measured on a session configured as
+// "ccs-…-GLM-5.3-Flash[1m]", its transcript records plain "GLM-5.3-Flash".
+// claudeContextWindow then sees no "[1m]" and understates the window ~5x
+// (200k vs 1M), inflating the reply footer's ctx % from ~18% to ~91%. The
+// init event's model is what the CLI was actually told to use (and what the
+// footer displays), so it wins whenever it is known; the transcript-derived
+// window stays as the fallback for usage recovered before the init event.
+func (cs *claudeSession) alignContextWindow(u *core.ContextUsage) {
+	if u == nil {
+		return
+	}
+	if m := cs.GetModel(); m != "" {
+		u.ContextWindow = claudeContextWindow(m)
+	}
+}
+
 // claudeUsageFromTranscriptLine parses one JSONL transcript line and returns
 // the exact prompt size it records, or nil when the line is not an assistant
 // event carrying a usable usage block.
@@ -909,6 +929,7 @@ func tailUsageFromTranscript(path string, windowBytes int64, override int) (usag
 func (cs *claudeSession) recoverUsageFromTranscript() *core.ContextUsage {
 	u, _ := tailUsageFromTranscript(cs.transcriptPath(), transcriptRecoveryWindow, cs.ctxWindowOverride)
 	if u != nil {
+		cs.alignContextWindow(u)
 		slog.Info("claudeSession: recovered context usage from transcript",
 			"used", u.UsedTokens, "input", u.InputTokens,
 			"cache_read", u.CachedInputTokens, "cache_creation", u.CacheCreationInputTokens,
@@ -1222,6 +1243,7 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 			cs.usageMu.Lock()
 			// A recovered snapshot is a placeholder and a result snapshot is an
 			// aggregate — the transcript's per-call figure supersedes both.
+			cs.alignContextWindow(u)
 			cs.lastUsage = u
 			cs.usageSource = "transcript"
 			cs.usageMu.Unlock()
