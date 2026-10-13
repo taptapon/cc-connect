@@ -1,0 +1,47 @@
+# 本地补丁集（分支 `local/v1.5.1-beta.3-patched`）
+
+> 本文件只记录**这组本地改动本身**：改了什么、为什么改、动到哪些文件、回归测试在哪。
+> **不含部署侧信息**（构建产物装到哪、如何安装/升级/回滚）——那属于运行方的运维文档，不在本仓。
+>
+> English: this document lists the local patch set carried by the `local/v1.5.1-beta.3-patched`
+> branch on top of upstream `v1.5.1-beta.3`. Install / upgrade / rollback steps are intentionally out of scope.
+
+## 分支
+
+| 分支 | 基线 | 用途 |
+|---|---|---|
+| `local/v1.5.1-beta.3-patched` | upstream `v1.5.1-beta.3` | 实际运行版；下列补丁全部在此分支 |
+| `feat/model-picker-aggregation` | `main` | 备用上游 PR（模型选择器聚合） |
+
+remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
+
+## 背景：这组改动解决什么
+
+上游 `v1.5.1-beta.3` 在下面几类场景下不可用，故在本分支修复：
+
+1. **飞书 @ 通知只在纯文本消息里触发**——卡片/富文本中的 at 标签只渲染、不触发提及提醒；而全局 `[display] mode = "quiet"` 与默认 `reply_footer` 都会让回复走卡片路径。
+2. **quiet 模式的流式预览卡片（`UpdateMessage` 路径）不跑 mention 解析**——卡片里的 at 也不会变成真 mention、不触发提醒。
+3. **bot @ 人类用户从未生效**——两个 bug 叠加：SDK 群成员迭代器在单页群里重复首页，去重时把 open_id 抹成空；text 语法 at 在纯文本消息里被转成卡片语法后削成空 at 标签。
+4. 附带项：无头会话的模型选择器与桌面端不同源、timer one-shot job 死循环、footer `ctx` 百分比虚高、weixin 平台 `Send` 路径分类错误。
+
+## 补丁清单
+
+| # | commit | 改了什么 | 主要文件 | 回归测试 |
+|---|---|---|---|---|
+| 1 | `f848321d` `57ebd8c0` | `/model` 命令读 `~/.claude/settings.json` 的 `modelPicker.options`（聚合模式写入）；`replaceBuiltInOptions=true` 时优先于注入的 provider models——**无头会话与桌面端模型选择器同源** | `agent/claudecode/claudecode.go` | `claudecode_model_test.go` |
+| 2 | `bcf7c566` | 飞书 at 按目标类型选路：**@bot 整条降级 `MsgTypeText`** 保 mention 送达，@human 走卡片。**仅对配了 `peer_bots` 的项目生效**（没配则退回"任何 at 都降级"的老行为） | `platform/feishu/feishu.go` | `feishu_test.go` |
+| 3 | `74da08f3` | quiet 模式的流式卡片走 `UpdateMessage`，**绕过** mention 解析与 @bot 降级——最终回复里提及另一个 bot 时删掉预览卡片、回落普通 `Send`（新增 `core.FinalTextDetacher` 接口 + `feishu.ShouldDetachForFinalText`）。**不装它，quiet 模式下回复里 @ 别的 bot 对方收不到**（症状：群客户端看到卡片、"@"是纯文字不带蓝） | `core/streaming.go`、`platform/feishu/feishu.go` | `feishu_test.go` |
+| 4 | `79df7c2d` | timer 的 one-shot job 改为**执行前**就同步落盘 `fired`（`MarkFired` 前移），执行错误改由新增的 `MarkError` 单独记录。修的是死循环：exec 里重启 daemon → daemon 在 `MarkFired` 落盘前就死了 → 该 job 永远停在"未触发" → 每次重启重新触发它（每 ~10s 一条通知 + 一次重启） | `core/timer.go` | `core/cuj_test.go` |
+| 5 | `3af6380a` | quiet 模式下每个 thinking/工具边界都往正文插 `\n\n`，连续多个边界无文本间隔时会累积成 4~12 个连续空行——加 `streamPreview.endsWithParagraphBreak()` 守卫。**只在纯文本回复里看得见**（卡片 markdown 会折叠多余空行） | `core/engine.go`、`core/streaming.go` | `core/streaming_test.go` |
+| 6 | `2cc97715` | footer 的 `ctx N%` 虚高：网关会把 API 响应里的 model 字段改写掉 `[1m]` 后缀，usage 走 transcript 回读时按 200k 窗口算，ctx 从真实 ~18% 虚标到 91%——新增 `alignContextWindow`，transcript 回读的两处优先用 init 事件的会话模型名重推窗口。token 数值不动 | `agent/claudecode/session.go` | `session_test.go` |
+| 7 | `3cd7f168` `35a24ba5` | bot @ 人类用户修复（**两个 bug 叠加**导致 @人 从未生效）：① lark SDK `GetChatMembers` 迭代器在单页群无限重复第一页，`fetchChatMembers` 的同名去重把重复成员当重名、将 open_id 抹成 `""` → 群名片解析层拿到全空 map，静默失效还缓存 1 小时；② `buildReplyContent` 对 @human 纯文本消息也把 text 语法 at 转成卡片语法再按 `MsgTypeText` 发送，飞书削成空 `<at user_id=""></at>` | `platform/feishu/feishu.go` | `TestAddChatMember`、`TestBuildReplyContent_HumanMention*` |
+| 7b | `d20b442e` | `ShouldDetachForFinalText` 从「含 @bot」放宽到「含**任意**解析后 at」——quiet 模式下最终回复里 **@人类** 原本留在卡片里（不解析、不触发提醒）静默丢，现在也回落文本、真发蓝 @。代价：带 @ 的最终回复失去卡片 markdown | `platform/feishu/feishu.go` | `TestShouldDetachForFinalText`（人类 mention 用例已翻转） |
+| W | `4a27a987` | **weixin 平台**：interactive `Send` 改走 reply 路径 + 新增 budget notice。⚠️ 该 commit 自称 "patch 7"，与上表补丁 7 是**两套独立编号**（weixin 侧自编号，故此处记作 `W` 以免混淆） | `platform/weixin/weixin.go`、`platform/weixin/media_outbound.go` | `weixin_test.go` |
+
+## 构建
+
+```bash
+make build-noweb          # 需要 go；国内网络可加 GOPROXY=goproxy.cn
+```
+
+（装到哪个路径、如何升级/回滚、备份约定：属部署侧，见运行方自己的运维文档。）
