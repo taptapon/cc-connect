@@ -37,7 +37,7 @@ const (
 	// active. We pace separate messages (not chunks: multi-chunk sends are fine)
 	// to stay well below the trigger. Configurable via burst_limit /
 	// burst_window_secs platform options.
-	defaultBurstLimit      = 4     // max separate messages per window
+	defaultBurstLimit      = 6     // 补丁7: max separate messages per window (was 4; user-raised to the gateway's ~5-6 trigger)
 	defaultBurstWindowSecs = 86400 // window length (24h: ilink budgets ~5-6 sends/day)
 	// typingTicketTTL is how long a cached typing ticket remains valid.
 	typingTicketTTL = 10 * time.Minute
@@ -146,6 +146,10 @@ type Platform struct {
 	sendQuotaTimes  []time.Time
 	sendQuotaLimit  int
 	sendQuotaWindow time.Duration
+	// budgetNotice (补丁7): non-empty when the push budget is at or one send
+	// from exhaustion; the next reply-path send delivers it to the user once
+	// and clears it. Guarded by sendQuotaMu.
+	budgetNotice string
 }
 
 type typingTicketEntry struct {
@@ -796,6 +800,19 @@ func (p *Platform) checkSendQuota(ctx context.Context, path sendPath) error {
 		}
 	}
 	p.sendQuotaTimes = kept
+	// 补丁7: arm the user notice one send before exhaustion, and (re)arm on
+	// exhaustion itself so the next chat reply explains why pushes went quiet.
+	switch {
+	case len(p.sendQuotaTimes) == p.sendQuotaLimit-1:
+		p.budgetNotice = "⚠️ 微信推送预算将尽：主动推送（定时任务/文件）仅剩 1 条，用尽后需等 24h 窗口滚动或重新扫码登录。"
+		slog.Warn("weixin: push budget nearing exhaustion",
+			"used_after_this_send", len(p.sendQuotaTimes)+1,
+			"limit", p.sendQuotaLimit,
+			"window", p.sendQuotaWindow.String(),
+		)
+	case len(p.sendQuotaTimes) >= p.sendQuotaLimit:
+		p.budgetNotice = "⚠️ 微信推送预算已用尽（" + fmt.Sprint(p.sendQuotaLimit) + "/" + fmt.Sprint(p.sendQuotaLimit) + "）：主动推送将静默失败，聊天回复不受影响，直至 24h 窗口滚动或重新扫码登录。"
+	}
 	if len(p.sendQuotaTimes) >= p.sendQuotaLimit {
 		p.sendQuotaMu.Unlock()
 		pushBudgetExceededCounter.Add(1)
@@ -814,10 +831,27 @@ func (p *Platform) checkSendQuota(ctx context.Context, path sendPath) error {
 	return nil
 }
 
+// takeBudgetNotice (补丁7) returns the armed budget notice together with
+// content and disarms it. Replies bypass the quota, so delivering the notice
+// on the reply path costs nothing and actually reaches the user in-chat.
+func (p *Platform) takeBudgetNotice(content string) string {
+	p.sendQuotaMu.Lock()
+	notice := p.budgetNotice
+	p.budgetNotice = ""
+	p.sendQuotaMu.Unlock()
+	if notice == "" {
+		return content
+	}
+	return strings.TrimRight(content, "\n") + "\n\n" + notice
+}
+
 func (p *Platform) sendChunks(ctx context.Context, replyCtx any, content string, path sendPath) error {
 	rc, ok := replyCtx.(*replyContext)
 	if !ok || rc == nil {
 		return fmt.Errorf("weixin: invalid reply context")
+	}
+	if path == sendPathReply {
+		content = p.takeBudgetNotice(content) // 补丁7
 	}
 	if err := p.checkSendQuota(ctx, path); err != nil {
 		return err
