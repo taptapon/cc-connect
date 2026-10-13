@@ -766,3 +766,106 @@ func TestSendSingleItem_PushRespectsBudget(t *testing.T) {
 		t.Fatalf("push budget counter = %d, want 1", got)
 	}
 }
+
+// --- 补丁7: interactive-reply window + budget notice ---
+
+// TestClassifySendPath_InteractiveWindow covers the 补丁7 reclassification:
+// a Send addressed to a peer that messaged us within interactiveReplyWindow
+// takes the reply path (bypasses the push budget); stale or unknown peers
+// stay on the push path.
+func TestClassifySendPath_InteractiveWindow(t *testing.T) {
+	p := &Platform{lastInbound: make(map[string]time.Time)}
+
+	// No inbound history → push.
+	rc := &replyContext{peerUserID: "alice"}
+	if got := p.classifySendPath(rc); got != sendPathPush {
+		t.Fatalf("no inbound: path = %s, want push", got)
+	}
+
+	// Recent inbound → reply.
+	p.recordInbound("alice")
+	if got := p.classifySendPath(rc); got != sendPathReply {
+		t.Fatalf("recent inbound: path = %s, want reply", got)
+	}
+
+	// Stale inbound (beyond the window) → push again.
+	p.inboundMu.Lock()
+	p.lastInbound["alice"] = time.Now().Add(-2 * interactiveReplyWindow)
+	p.inboundMu.Unlock()
+	if got := p.classifySendPath(rc); got != sendPathPush {
+		t.Fatalf("stale inbound: path = %s, want push", got)
+	}
+
+	// Other peers are not affected.
+	if got := p.classifySendPath(&replyContext{peerUserID: "bob"}); got != sendPathPush {
+		t.Fatalf("other peer: path = %s, want push", got)
+	}
+
+	// Non-replyContext payloads stay on the push path.
+	if got := p.classifySendPath(nil); got != sendPathPush {
+		t.Fatalf("nil ctx: path = %s, want push", got)
+	}
+	if got := p.classifySendPath("junk"); got != sendPathPush {
+		t.Fatalf("junk ctx: path = %s, want push", got)
+	}
+}
+
+// TestCheckSendQuota_BudgetNoticeArming covers the 补丁7 notice lifecycle: the
+// notice arms when the window holds limit-1 entries, updates on exhaustion,
+// and takeBudgetNotice delivers it exactly once on the reply path.
+func TestCheckSendQuota_BudgetNoticeArming(t *testing.T) {
+	resetPushBudgetExceededCounter()
+	p := &Platform{sendQuotaLimit: 3, sendQuotaWindow: time.Hour}
+	ctx := context.Background()
+
+	// Sends 1 and 2: no notice.
+	for i := 0; i < 2; i++ {
+		if err := p.checkSendQuota(ctx, sendPathPush); err != nil {
+			t.Fatalf("push %d should pass: %v", i+1, err)
+		}
+	}
+	if p.budgetNotice != "" {
+		t.Fatalf("notice armed early: %q", p.budgetNotice)
+	}
+
+	// Send 3 (the last allowed slot): arms the "nearly exhausted" notice.
+	if err := p.checkSendQuota(ctx, sendPathPush); err != nil {
+		t.Fatalf("push 3 should pass: %v", err)
+	}
+	if p.budgetNotice == "" {
+		t.Fatal("notice should be armed at limit-1")
+	}
+	nearly := p.budgetNotice
+
+	// Reply path delivers the notice once and disarms it.
+	got := p.takeBudgetNotice("hello")
+	if !strings.Contains(got, nearly) {
+		t.Fatalf("reply should carry the armed notice; got %q", got)
+	}
+	if p.takeBudgetNotice("again") != "again" {
+		t.Fatal("notice should be one-shot")
+	}
+
+	// 4th push is over budget: arms the exhausted notice (delivered on next reply).
+	if err := p.checkSendQuota(ctx, sendPathPush); err == nil {
+		t.Fatal("push 4 should be blocked")
+	}
+	if p.budgetNotice == "" {
+		t.Fatal("exhausted notice should be armed")
+	}
+	if got := p.takeBudgetNotice("hi"); !strings.Contains(got, "已用尽") {
+		t.Fatalf("exhaustion notice should mention 已用尽; got %q", got)
+	}
+
+	// Window roll-back below limit-1 disarms re-arming until the threshold is
+	// crossed again: prune everything and confirm a fresh push does not warn.
+	p.sendQuotaMu.Lock()
+	p.sendQuotaTimes = nil
+	p.sendQuotaMu.Unlock()
+	if err := p.checkSendQuota(ctx, sendPathPush); err != nil {
+		t.Fatalf("push after window roll should pass: %v", err)
+	}
+	if p.budgetNotice != "" {
+		t.Fatalf("notice should not re-arm below limit-1: %q", p.budgetNotice)
+	}
+}
