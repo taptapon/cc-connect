@@ -113,11 +113,12 @@ func (p *Platform) uploadToWeixinCDN(ctx context.Context, to string, plaintext [
 // by every send attempt made while it is active, so retrying only prolongs the
 // outage.
 //
-// Media sends are scoped to the push path: they share the outbound sendMessage
-// endpoint that the gateway throttles and are exactly the kind of
-// "separate-message" traffic the burst budget is meant to pace (issue #1742).
+// Media sends share the outbound sendMessage endpoint that the gateway
+// throttles. They count as push (issue #1742) — except (补丁7) when the peer
+// messaged us within interactiveReplyWindow (e.g. a chat-requested file),
+// where they are reclassified as reply and bypass the push budget.
 func (p *Platform) sendSingleItem(ctx context.Context, rc *replyContext, item messageItem) error {
-	if err := p.checkSendQuota(ctx, sendPathPush); err != nil {
+	if err := p.checkSendQuota(ctx, p.classifySendPath(rc)); err != nil {
 		return err
 	}
 	msg := sendMessageReq{
