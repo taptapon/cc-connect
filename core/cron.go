@@ -892,6 +892,18 @@ type mutePlatform struct {
 func (m *mutePlatform) Reply(_ context.Context, _ any, _ string) error { return nil }
 func (m *mutePlatform) Send(_ context.Context, _ any, _ string) error  { return nil }
 
+// unwrapMutePlatform returns the real platform behind a mutePlatform wrapper.
+// Interactive states spawned by muted timer/cron jobs carry the wrapper, but
+// explicit outbound calls (`cc-connect send`) are the agent's/user's intent,
+// not the muted job's own notifications — they must reach the real platform
+// instead of being silently dropped while reporting success (patch 8).
+func unwrapMutePlatform(p Platform) Platform {
+	if mp, ok := p.(*mutePlatform); ok {
+		return mp.Platform
+	}
+	return p
+}
+
 func GenerateCronID() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
