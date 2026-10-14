@@ -11707,6 +11707,7 @@ func (e *Engine) resolveSendTarget(sessionKey string, attachments bool) (sendTar
 		replyCtx = state.replyCtx
 		state.mu.Unlock()
 	}
+	p = unwrapMutePlatform(p)
 
 	if p == nil && resolvedSessionKey != "" {
 		strippedKey := resolvedSessionKey
@@ -11993,6 +11994,7 @@ func (e *Engine) resolveOutboundSessionTarget(sessionKey string, hasAttachments 
 		replyCtx = state.replyCtx
 		state.mu.Unlock()
 	}
+	p = unwrapMutePlatform(p)
 
 	if p == nil && sessionKey != "" {
 		strippedKey := sessionKey
