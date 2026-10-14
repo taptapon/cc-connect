@@ -37,6 +37,7 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 | 7 | `3cd7f168` `35a24ba5` | bot @ 人类用户修复（**两个 bug 叠加**导致 @人 从未生效）：① lark SDK `GetChatMembers` 迭代器在单页群无限重复第一页，`fetchChatMembers` 的同名去重把重复成员当重名、将 open_id 抹成 `""` → 群名片解析层拿到全空 map，静默失效还缓存 1 小时；② `buildReplyContent` 对 @human 纯文本消息也把 text 语法 at 转成卡片语法再按 `MsgTypeText` 发送，飞书削成空 `<at user_id=""></at>` | `platform/feishu/feishu.go` | `TestAddChatMember`、`TestBuildReplyContent_HumanMention*` |
 | 7b | `d20b442e` | `ShouldDetachForFinalText` 从「含 @bot」放宽到「含**任意**解析后 at」——quiet 模式下最终回复里 **@人类** 原本留在卡片里（不解析、不触发提醒）静默丢，现在也回落文本、真发蓝 @。代价：带 @ 的最终回复失去卡片 markdown | `platform/feishu/feishu.go` | `TestShouldDetachForFinalText`（人类 mention 用例已翻转） |
 | W | `4a27a987` | **weixin 平台**：interactive `Send` 改走 reply 路径 + 新增 budget notice。⚠️ 该 commit 自称 "patch 7"，与上表补丁 7 是**两套独立编号**（weixin 侧自编号，故此处记作 `W` 以免混淆） | `platform/weixin/weixin.go`、`platform/weixin/media_outbound.go` | `weixin_test.go` |
+| 8 | `18402a8e` | **mute timer 吞掉显式外发**：`--mute` 的 timer/cron job 把会话 platform 包成 `mutePlatform`（丢弃一切 Send/Reply 且返回 nil），而 `resolveOutboundSessionTarget` / `resolveSendTarget` 把这个包装器直接交给外部 API 调用——mute 回合内 `cc-connect send -s` **假报成功、消息静默丢弃**（2026-10-14 实锤：重启回执、定时天气、接续确认全灭，且误诊过"卡片渲染"）。两处 resolver 现在解包回真实 platform；job 自身的 ⏰通知/结果回执仍被 mute 静音，语义不变 | `core/engine.go`、`core/cron.go` | `TestUnwrapMutePlatform` |
 
 ## 构建
 
