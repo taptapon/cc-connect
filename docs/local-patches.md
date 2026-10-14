@@ -38,6 +38,7 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 | 7b | `d20b442e` | `ShouldDetachForFinalText` 从「含 @bot」放宽到「含**任意**解析后 at」——quiet 模式下最终回复里 **@人类** 原本留在卡片里（不解析、不触发提醒）静默丢，现在也回落文本、真发蓝 @。代价：带 @ 的最终回复失去卡片 markdown | `platform/feishu/feishu.go` | `TestShouldDetachForFinalText`（人类 mention 用例已翻转） |
 | W | `4a27a987` | **weixin 平台**：interactive `Send` 改走 reply 路径 + 新增 budget notice。⚠️ 该 commit 自称 "patch 7"，与上表补丁 7 是**两套独立编号**（weixin 侧自编号，故此处记作 `W` 以免混淆） | `platform/weixin/weixin.go`、`platform/weixin/media_outbound.go` | `weixin_test.go` |
 | 8 | `18402a8e` | **mute timer 吞掉显式外发**：`--mute` 的 timer/cron job 把会话 platform 包成 `mutePlatform`（丢弃一切 Send/Reply 且返回 nil），而 `resolveOutboundSessionTarget` / `resolveSendTarget` 把这个包装器直接交给外部 API 调用——mute 回合内 `cc-connect send -s` **假报成功、消息静默丢弃**（2026-10-14 实锤：重启回执、定时天气、接续确认全灭，且误诊过"卡片渲染"）。两处 resolver 现在解包回真实 platform；job 自身的 ⏰通知/结果回执仍被 mute 静音，语义不变 | `core/engine.go`、`core/cron.go` | `TestUnwrapMutePlatform` |
+| 9 | `41cd87fa` | **私聊豁免弃卡降级**：`ShouldDetachForFinalText` 原先对"最终文本含可解析 @"一律删预览卡回落纯文本——私聊里这是纯损失（收件人只有用户本人，消息必达，at 无 mention 事件可触发，降级只丢 markdown 渲染；2026-10-14 mac-c 实测：DM 回复顺嘴写 `@h-cc` 命中 mention_map，整条表格变乱码）。现在 Platform 维护 chat_id→chat_type 缓存（消息入口记录），**p2p 会话直接保卡**；群聊与缓存未命中（如 timer/cron 主动外发）保持原判定 fail closed | `platform/feishu/feishu.go` | `TestShouldDetachP2PExemption` |
 
 ## 构建
 
