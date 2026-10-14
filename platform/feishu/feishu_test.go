@@ -2405,6 +2405,44 @@ func TestShouldDetachForFinalText(t *testing.T) {
 	}
 }
 
+// TestShouldDetachP2PExemption (补丁9, 2026-10-14): in p2p chats a mention has
+// no functional effect (the user is the only recipient), so the card must be
+// kept even when the text contains a resolvable @ — demoting to plain text
+// only loses markdown rendering (2026-10-14 mac-c: a casual "@h-cc" in a DM
+// reply hit mention_map and flattened the whole card). Cache miss (chat never
+// seen at intake) must keep the legacy detach behavior — fail closed.
+func TestShouldDetachP2PExemption(t *testing.T) {
+	p := &Platform{
+		platformName:    "feishu",
+		resolveMentions: true,
+		mentionMap:      map[string]string{"h-cc": "ou_peer_bot"},
+	}
+	p.chatTypes.Store("oc_dm_chat", "p2p")
+
+	rcDM := replyContext{chatID: "oc_dm_chat"}
+	// Resolvable @ in a known p2p chat: keep the card.
+	if p.ShouldDetachForFinalText(rcDM, nil, "go ask @h-cc to pull") {
+		t.Error("p2p chat with resolvable @ must NOT detach (card kept)")
+	}
+	// Already-resolved at-tag in a known p2p chat: keep the card.
+	if p.ShouldDetachForFinalText(rcDM, nil, `<at user_id="ou_peer_bot">h-cc</at> done`) {
+		t.Error("p2p chat with resolved at-tag must NOT detach")
+	}
+
+	// Cache miss: legacy behavior — resolvable @ still detaches.
+	rcUnknown := replyContext{chatID: "oc_never_seen"}
+	if !p.ShouldDetachForFinalText(rcUnknown, nil, "go ask @h-cc to pull") {
+		t.Error("unknown chat (cache miss) must keep legacy detach behavior")
+	}
+
+	// Known group chat: legacy behavior — resolvable @ still detaches.
+	p.chatTypes.Store("oc_group_chat", "group")
+	rcGroup := replyContext{chatID: "oc_group_chat"}
+	if !p.ShouldDetachForFinalText(rcGroup, nil, "go ask @h-cc to pull") {
+		t.Error("group chat with resolvable @ must detach")
+	}
+}
+
 func TestAddChatMember(t *testing.T) {
 	// Regression for 2026-10-12 mac-c: the chat-members iterator re-yields the
 	// same member repeatedly; the old "any repeat wipes the ID" dedup turned

@@ -131,6 +131,13 @@ type Platform struct {
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
+	// chatTypes: known chat_id → chat_type ("p2p"/"group"), recorded at message
+	// intake. Lets ShouldDetachForFinalText skip the card-detach in p2p chats,
+	// where a mention has no functional effect (the user is the only recipient)
+	// and demoting to plain text only loses markdown rendering.
+	// Cache miss (unknown chat) keeps the legacy detach behavior — fail closed.
+	// 补丁9：私聊豁免弃卡降级（2026-10-14）。
+	chatTypes sync.Map
 	// noReplyToTrigger: when true, send via Create instead of Im.Message.Reply (no quote to the user's message).
 	noReplyToTrigger bool
 	resolveMentions  bool
@@ -550,6 +557,14 @@ func (p *Platform) ShouldDetachForFinalText(replyCtx, previewHandle any, finalTe
 	}
 	rc, ok := replyCtx.(replyContext)
 	if !ok {
+		return false
+	}
+	// 补丁9：私聊豁免。p2p 会话收件人只有用户本人，消息必达，at 标签无 mention
+	// 事件可触发——弃卡降级纯属白损失渲染（2026-10-14 实测：正文顺嘴写 @h-cc
+	// 命中 mention_map，整条回复降级纯文本、表格变乱码）。群聊维持原判定。
+	// 缓存未命中（该会话本轮没收到过消息，如 timer/cron 主动外发）按未知处理，
+	// 保持原行为 fail closed。
+	if ct, ok := p.chatTypes.Load(rc.chatID); ok && ct == "p2p" {
 		return false
 	}
 	resolved := p.resolveMentionsInContent(context.Background(), rc.chatID, finalText)
@@ -1486,6 +1501,9 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	chatType := ""
 	if msg.ChatType != nil {
 		chatType = *msg.ChatType
+	}
+	if chatID != "" && chatType != "" {
+		p.chatTypes.Store(chatID, chatType)
 	}
 	mentionCount := len(msg.Mentions)
 	slog.Debug(p.tag()+": inbound message",
