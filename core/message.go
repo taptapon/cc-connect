@@ -451,6 +451,12 @@ type Message struct {
 	// see in the card. Plain-text answers and platforms without in-place card
 	// updates leave it false and keep the echo.
 	CardAnswerRendered bool
+	// FromBot is true when the sender is an app/bot rather than a human
+	// (Feishu sender_type "app"). The empty-message guard uses it to avoid
+	// answering bot-sent empties with the fixed hint reply — two bots in a
+	// shared group would otherwise ping-pong hint messages at each other.
+	// Platforms that don't detect bot senders leave it false (treated human).
+	FromBot bool
 }
 
 // EventType distinguishes different kinds of agent output.

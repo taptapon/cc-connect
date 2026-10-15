@@ -2057,6 +2057,10 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	if msg.ChatId != nil {
 		chatID = *msg.ChatId
 	}
+	// fromBot: sender is an app/bot (Feishu sender_type "app"). Consumed by
+	// core's empty-message guard so two bots in a shared group don't answer
+	// each other's empty messages with hint replies (ping-pong loop).
+	fromBot := sender.SenderType != nil && *sender.SenderType == "app"
 	userID := userIDFromEvent(sender.SenderId)
 	senderType := ""
 	if sender.SenderType != nil {
@@ -2283,7 +2287,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx, staged)
+	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx, staged, fromBot)
 
 	return nil
 }
@@ -2305,10 +2309,10 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
 func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
-	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{}, nil)
+	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{}, nil, false)
 }
 
-func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext, staged []stagedAttachment) {
+func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext, staged []stagedAttachment, fromBot bool) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -2389,6 +2393,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot: fromBot,
 			Content: text, ExtraContent: quotedExtra,
 			Images: append(quoted.images, stagedImages...), Files: append(quotedFiles, stagedFiles...), ReplyCtx: rctx,
 			UserMessageTimeMs: createTimeMs,
@@ -2437,6 +2442,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot:           fromBot,
 			Content:           "",
 			ExtraContent:      quoted.text,
 			Images:            append(quoted.images, core.ImageAttachment{MimeType: mimeType, Data: imgData}),
@@ -2470,6 +2476,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot: fromBot,
 			Audio: &core.AudioAttachment{
 				MimeType: "audio/opus",
 				Data:     audioData,
@@ -2501,6 +2508,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot: fromBot,
 			Content: text, ExtraContent: quotedExtra, Images: append(quoted.images, images...), Files: files,
 			ReplyCtx:          rctx,
 			UserMessageTimeMs: createTimeMs,
@@ -2532,6 +2540,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot: fromBot,
 			Files: []core.FileAttachment{{
 				MimeType: mimeType,
 				Data:     fileData,
@@ -2553,6 +2562,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot:           fromBot,
 			Content:           text,
 			Images:            images,
 			Files:             files,
@@ -2579,6 +2589,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 				SessionKey: sessionKey, Platform: p.platformName,
 				MessageID: messageID,
 				UserID:    userID, UserName: userName, ChatName: chatName,
+				FromBot: fromBot,
 				Content: "[sticker]", ExtraContent: quoted.text, ReplyCtx: rctx,
 				UserMessageTimeMs: createTimeMs,
 			})
@@ -2590,6 +2601,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot:           fromBot,
 			Images:            []core.ImageAttachment{{MimeType: mimeType, Data: imgData}},
 			ReplyCtx:          rctx,
 			UserMessageTimeMs: createTimeMs,
@@ -2647,6 +2659,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			FromBot: fromBot,
 			Content: text, ExtraContent: quoted.text, Images: images, Files: files, ReplyCtx: rctx,
 			UserMessageTimeMs: createTimeMs,
 		})

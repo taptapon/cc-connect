@@ -83,6 +83,7 @@ func TestDispatchMessageDropsRecalledMessageBeforeHandler(t *testing.T) {
 		replyContext{messageID: "om_drop", sessionKey: "feishu:ou_user:ou_user"},
 		"",
 		0,
+		false,
 	)
 
 	if called {
@@ -189,6 +190,7 @@ func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 				replyContext{messageID: "om_child", sessionKey: "feishu:oc_chat:ou_user"},
 				parentMessageID,
 				0,
+				false,
 			)
 
 			select {
@@ -290,6 +292,7 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 		replyContext{messageID: "om_child", sessionKey: "feishu:oc_chat:ou_user"},
 		parentMessageID,
 		0,
+		false,
 	)
 
 	select {
@@ -2334,6 +2337,7 @@ func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 					replyContext{messageID: msgID, chatID: chatID, sessionKey: sessionKey},
 					"", // no parentID so we exercise the batch path
 					int64(1710000000000+i),
+					false,
 				)
 			}
 
@@ -2435,6 +2439,7 @@ func TestDispatchMessageSingleImageRegression(t *testing.T) {
 		"oc_single",
 		replyContext{messageID: "om_single", chatID: "oc_single", sessionKey: "feishu:oc_single:ou_user"},
 		"", 0,
+		false,
 	)
 
 	select {
@@ -2529,6 +2534,7 @@ func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 		"oc_chat",
 		replyContext{messageID: "om_quoted_child", chatID: "oc_chat", sessionKey: "feishu:oc_chat:ou_user"},
 		parentMessageID, 0,
+		false,
 	)
 
 	select {
@@ -2869,6 +2875,7 @@ func TestDispatchMessagePostWithFiles(t *testing.T) {
 		replyContext{messageID: messageID, sessionKey: "feishu:oc_chat:ou_user"},
 		"",
 		0,
+		false,
 	)
 
 	select {
