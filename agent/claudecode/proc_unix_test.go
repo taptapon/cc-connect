@@ -111,3 +111,11 @@ func TestSignalProcessGroup_NilCmd(t *testing.T) {
 		t.Errorf("expected no error on nil cmd, got %v", err)
 	}
 }
+
+// On unix the fast-kill path must stay OFF — the SIGTERM ladder is the
+// platform contract (patch 11 #4 scope: Windows only).
+func TestFastKillTree_OffOnUnix(t *testing.T) {
+	if fastKillTree() {
+		t.Fatal("fastKillTree() = true on unix, want false")
+	}
+}
