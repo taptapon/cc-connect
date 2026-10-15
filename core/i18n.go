@@ -283,6 +283,7 @@ const (
 
 	MsgVoiceNotEnabled               MsgKey = "voice_not_enabled"
 	MsgVoiceUsingPlatformRecognition MsgKey = "voice_using_platform_recognition"
+	MsgEmptyMessageDropped           MsgKey = "empty_message_dropped"
 	MsgVoiceNoFFmpeg                 MsgKey = "voice_no_ffmpeg"
 	MsgVoiceTranscribing             MsgKey = "voice_transcribing"
 	MsgVoiceTranscribed              MsgKey = "voice_transcribed"
@@ -1699,6 +1700,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🎙 語音訊息未啟用，請在 config.toml 中配置 `[speech]` 部分。",
 		LangJapanese:           "🎙 音声メッセージは有効になっていません。config.toml で `[speech]` を設定してください。",
 		LangSpanish:            "🎙 Los mensajes de voz no están habilitados. Configure `[speech]` en config.toml.",
+	},
+	MsgEmptyMessageDropped: {
+		LangEnglish:            "ℹ️ Received an empty message (no text, no attachments) — nothing to process for **%s**. Please type your request.",
+		LangChinese:            "ℹ️ 收到一条空消息（无正文、无附件），**%s** 未启动处理；请直接输入内容。",
+		LangTraditionalChinese: "ℹ️ 收到一條空訊息（無正文、無附件），**%s** 未啟動處理；請直接輸入內容。",
+		LangJapanese:           "ℹ️ 空のメッセージを受信しました（本文・添付なし）。**%s** は処理を開始していません。リクエストを入力してください。",
+		LangSpanish:            "ℹ️ Se recibió un mensaje vacío (sin texto ni adjuntos): **%s** no inició ningún procesamiento. Escribe tu solicitud.",
 	},
 	MsgVoiceUsingPlatformRecognition: {
 		LangEnglish:            "⚠️ Voice transcription not configured, using %s built-in recognition",
