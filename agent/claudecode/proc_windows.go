@@ -76,6 +76,18 @@ func isTaskkillNotRunning(output []byte) bool {
 		bytes.Contains(lower, []byte("not found"))
 }
 
+// fastKillTree reports whether Close() should skip the graceful (stdin EOF)
+// and gentle-signal (taskkill without /F) stages and go straight to
+// taskkill /T /F.
+//
+// Windows opts in: `taskkill /T` without /F only asks GUI apps to close;
+// console processes (claude.exe and its node children) ignore it entirely,
+// so both stages were pure dead waits (~5s graceful + ~5s gentle signal),
+// making every /new ≈13s. Straight /T /F measures 1-3s. The trade-off —
+// no Stop-hook summary, in-flight output lost — is inherent to /new and
+// was accepted for this platform (2026-10-15).
+func fastKillTree() bool { return true }
+
 func processKillOutput(output []byte) string {
 	trimmed := strings.TrimSpace(string(output))
 	if trimmed == "" {

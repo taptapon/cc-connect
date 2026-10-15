@@ -46,3 +46,9 @@ func signalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 func forceKillCmd(cmd *exec.Cmd) error {
 	return signalProcessGroup(cmd, syscall.SIGKILL)
 }
+
+// fastKillTree reports whether Close() should skip the graceful (stdin EOF)
+// and gentle-signal (SIGTERM) stages and go straight to a group-wide force
+// kill. Unix keeps the full ladder: SIGTERM gives the CLI and its MCP server
+// children a real chance to run cleanup handlers. Only Windows opts in.
+func fastKillTree() bool { return false }
