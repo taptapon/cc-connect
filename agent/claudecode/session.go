@@ -42,6 +42,13 @@ type claudeSession struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	alive           atomic.Bool
+	// killing is set at the top of Close(): any non-zero exit observed after
+	// this point is the expected result of a deliberate teardown (/new, /stop,
+	// daemon shutdown, idle close), not a crash — finishReadLoop demotes those
+	// exits from ERROR to INFO. Kill manifests differ per platform (SIGKILL on
+	// unix; 0xc000013a or taskkill /F exit 1 on Windows), so the flag — not
+	// exit-code matching — is the source of truth.
+	killing atomic.Bool
 
 	// activeModel stores the model id reported by the CLI's init event (e.g.
 	// "claude-opus-4-7[1m]"). It may be empty if the init event hasn't
@@ -592,7 +599,22 @@ func (cs *claudeSession) finishReadLoop(waitErrCh <-chan error, stderrBuf *bytes
 		if stderrBuf != nil {
 			stderrMsg = strings.TrimSpace(stderrBuf.String())
 		}
-		if stderrMsg != "" {
+		// [claude-code:unrecognized_model] lines are informational notices
+		// (custom gateway model ids, e.g. CC Switch aggregations). They are
+		// not the failure cause — demote them to DEBUG and keep them out of
+		// the error surface, so a genuine crash isn't reported with the
+		// notice as its "message".
+		if notice, rest := splitUnrecognizedModelNotices(stderrMsg); notice != "" {
+			slog.Debug("claudeSession: model notice on stderr", "notice", notice)
+			stderrMsg = rest
+		}
+		if cs.killing.Load() {
+			// Deliberate teardown (/new /stop shutdown idle-close): the
+			// non-zero exit is expected. Log INFO, and do NOT emit an error
+			// event — the engine already knows it killed this session.
+			slog.Info("claudeSession: session terminated by stop/new/shutdown",
+				"error", err, "stderr", stderrMsg)
+		} else if stderrMsg != "" {
 			slog.Error("claudeSession: process failed", "error", err, "stderr", stderrMsg)
 			evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", stderrMsg)}
 			select {
@@ -602,10 +624,41 @@ func (cs *claudeSession) finishReadLoop(waitErrCh <-chan error, stderrBuf *bytes
 				// on every termination path. Callers (engine event loop) rely on
 				// these closures to observe session end.
 			}
+		} else {
+			// Failed with no stderr content left after notice-stripping (the
+			// previous code silently dropped this case). Surface the wait
+			// error itself — a SIGKILL from outside or a bare non-zero exit
+			// must not disappear without a trace.
+			slog.Error("claudeSession: process failed", "error", err)
+			evt := core.Event{Type: core.EventError, Error: err}
+			select {
+			case cs.events <- evt:
+			case <-cs.ctx.Done():
+			}
 		}
 	}
 	close(cs.events)
 	close(cs.done)
+}
+
+// splitUnrecognizedModelNotices splits stderr into its
+// `[claude-code:unrecognized_model]` notice lines (returned first, joined
+// with newlines) and everything else (returned second). Either part may be
+// empty.
+func splitUnrecognizedModelNotices(stderr string) (notice, rest string) {
+	if !strings.Contains(stderr, "[claude-code:unrecognized_model]") {
+		return "", stderr
+	}
+	var notices, restLines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(line, "[claude-code:unrecognized_model]") {
+			notices = append(notices, line)
+		} else {
+			restLines = append(restLines, line)
+		}
+	}
+	restJoined := strings.TrimSpace(strings.Join(restLines, "\n"))
+	return strings.Join(notices, "\n"), restJoined
 }
 
 func (cs *claudeSession) handleReadLoopScanErr(err error, waitDone <-chan struct{}) {
@@ -1631,6 +1684,11 @@ func (cs *claudeSession) Alive() bool {
 const defaultGracefulStopTimeout = 5 * time.Second
 
 func (cs *claudeSession) Close() error {
+	// Mark deliberate teardown BEFORE anything else so finishReadLoop can
+	// classify the resulting non-zero exit as expected (patch: unrecognized
+	// _model noise + killed-exit demotion).
+	cs.killing.Store(true)
+
 	// Best-effort cleanup of the --append-system-prompt-file temp file on
 	// every exit path. The file is small (~9KB) and OS temp cleanup also
 	// eventually claims it, but explicit removal keeps workdirs tidy.
@@ -1639,6 +1697,15 @@ func (cs *claudeSession) Close() error {
 			_ = os.Remove(cs.promptFilePath)
 		}
 	}()
+
+	// Windows fast path: taskkill without /F only *asks* console apps to
+	// close, and console processes ignore it — the graceful (Phase 1) and
+	// gentle-signal (Phase 2) stages below were pure dead waits, making every
+	// /new ≈13s. Go straight to taskkill /T /F (measured 13.2s → 1-3s).
+	// The macOS/Linux SIGTERM ladder is intentionally untouched.
+	if fastKillTree() {
+		return cs.forceKillAndAwait()
+	}
 
 	// Phase 1: Close stdin to signal EOF. Claude Code exits cleanly on
 	// stdin close, running Stop hooks (e.g. claude-mem session summary).
@@ -1681,14 +1748,22 @@ func (cs *claudeSession) Close() error {
 	// group-wide kill ensures grandchildren (Claude Code's MCP servers
 	// such as the Telegram bridge) are reaped along with the direct child;
 	// otherwise they can survive as orphans and spin at 100% CPU.
-	//
-	// A single taskkill /T /F attempt can lose a race against a
-	// still-forking descendant tree (e.g. an MCP server process spawned
-	// moments earlier) and report a PID as "could not be terminated" even
-	// though a repeat attempt kills it cleanly. Retry a few times before
-	// giving up, and bound the final wait so a kill that silently failed
-	// to take effect cannot hang this goroutine — and by extension the
-	// caller's abandon-timeout — forever.
+	return cs.forceKillAndAwait()
+}
+
+// forceKillAndAwait force-kills the whole process tree (cancel + taskkill
+// /T /F or SIGKILL, with retries against still-forking descendants) and
+// waits, bounded, for cs.done. Shared by the Windows fast path and the
+// unix Phase-3 escalation.
+//
+// A single taskkill /T /F attempt can lose a race against a
+// still-forking descendant tree (e.g. an MCP server process spawned
+// moments earlier) and report a PID as "could not be terminated" even
+// though a repeat attempt kills it cleanly. Retry a few times before
+// giving up, and bound the final wait so a kill that silently failed
+// to take effect cannot hang this goroutine — and by extension the
+// caller's abandon-timeout — forever.
+func (cs *claudeSession) forceKillAndAwait() error {
 	cs.cancel()
 	const killAttempts = 3
 	var killErr error
