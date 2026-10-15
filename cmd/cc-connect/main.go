@@ -281,7 +281,8 @@ func main() {
 	}
 
 	if rootOpts.showVersion {
-		fmt.Printf("cc-connect %s\ncommit:  %s\nbuilt:   %s\n", version, commit, buildTime)
+		v, c, b := effectiveBuildInfo()
+		fmt.Printf("cc-connect %s\ncommit:  %s\nbuilt:   %s\n", v, c, b)
 		return
 	}
 
@@ -295,10 +296,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	core.VersionInfo = fmt.Sprintf("cc-connect %s\ncommit: %s\nbuilt: %s", version, commit, buildTime)
-	core.CurrentVersion = version
-	core.CurrentCommit = commit
-	core.CurrentBuildTime = buildTime
+	v, c, b := effectiveBuildInfo()
+	core.VersionInfo = fmt.Sprintf("cc-connect %s\ncommit: %s\nbuilt: %s", v, c, b)
+	core.CurrentVersion = v
+	core.CurrentCommit = c
+	core.CurrentBuildTime = b
 
 	configPath := resolveConfigPath(rootOpts.configPath)
 
