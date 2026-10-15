@@ -3493,7 +3493,7 @@ func TestHandleMessage_AutoResetOnIdle_RotatesToNewSession(t *testing.T) {
 	}
 
 	sent := p.getSent()
-	if !strings.Contains(sent[0], "Session auto-reset") {
+	if !strings.Contains(sent[0], "has been switched to a new one") {
 		t.Fatalf("first reply = %q, want auto-reset notice", sent[0])
 	}
 	if got := sent[len(sent)-1]; got != "fresh reply" {
@@ -3547,7 +3547,7 @@ func TestHandleMessage_AutoResetOnIdle_DoesNotRotateFreshSession(t *testing.T) {
 	}
 	sent := p.getSent()
 	for _, line := range sent {
-		if strings.Contains(line, "Session auto-reset") {
+		if strings.Contains(line, "has been switched to a new one") {
 			t.Fatalf("unexpected auto-reset notice in replies: %v", sent)
 		}
 	}
@@ -3613,7 +3613,7 @@ func TestHandleMessage_AutoResetOnIdle_FiresWhenHeartbeatBumpedUpdatedAt(t *test
 		t.Fatal("expected a new active session after idle auto-reset")
 	}
 	sent := p.getSent()
-	if !strings.Contains(sent[0], "Session auto-reset") {
+	if !strings.Contains(sent[0], "has been switched to a new one") {
 		t.Fatalf("first reply = %q, want auto-reset notice", sent[0])
 	}
 }
@@ -3648,7 +3648,7 @@ func TestHandleMessage_AutoResetOnIdle_DoesNotTriggerForSlashCommand(t *testing.
 		t.Fatalf("active session = %s, want unchanged %s", active.ID, session.ID)
 	}
 	for _, line := range p.getSent() {
-		if strings.Contains(line, "Session auto-reset") {
+		if strings.Contains(line, "has been switched to a new one") {
 			t.Fatalf("unexpected auto-reset notice for slash command: %v", p.getSent())
 		}
 	}
