@@ -70,7 +70,8 @@ const (
 	slowPlatformSend    = 2 * time.Second  // platform Reply / Send
 	slowAgentStart      = 5 * time.Second  // agent.StartSession
 	slowAgentClose      = 3 * time.Second  // agentSession.Close
-	slowAgentSend       = 2 * time.Second  // agentSession.Send
+	slowSendLatency     = 5 * time.Second  // send → first agent output event
+	slowTurnDuration    = 10 * time.Minute // full agent turn wall time
 	slowAgentFirstEvent = 15 * time.Second // time from send to first agent event
 )
 
@@ -573,11 +574,16 @@ type interactiveState struct {
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	fromVoice                bool            // true if current turn originated from voice transcription
 	sideText                 string
-	deleteMode               *deleteModeState
-	modelSwitch              *modelSwitchState
-	pendingProviderAdd       *pendingProviderAddState
-	lastAutoCompressAt       time.Time
-	lastAutoCompressTokens   int
+	// firstEventAt is when the FIRST agent event of the current turn arrived
+	// (any type). Zero until then. Lets the caller report send_latency —
+	// how long the agent stayed silent before showing any sign of life —
+	// separately from turn_duration.
+	firstEventAt           time.Time
+	deleteMode             *deleteModeState
+	modelSwitch            *modelSwitchState
+	pendingProviderAdd     *pendingProviderAddState
+	lastAutoCompressAt     time.Time
+	lastAutoCompressTokens int
 
 	// Unsolicited event reader: a background goroutine that consumes agent
 	// events between user-initiated turns (e.g. background task completions).
@@ -3023,7 +3029,20 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 	content := strings.TrimSpace(msg.Content)
-	if content == "" && msg.ExtraContent == "" && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
+	if content == "" && strings.TrimSpace(msg.ExtraContent) == "" && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
+		// Empty-message guard (root-cure, 2026-10-15): nothing usable in the
+		// message — never spawn an agent turn on it. Reply with a fixed hint
+		// so humans aren't left in silence; stay SILENT for bot senders, or
+		// two bots in a shared group would answer each other's empties and
+		// ping-pong hint messages forever. ExtraContent is trimmed too: a
+		// whitespace-only reply quote must not smuggle an empty prompt past
+		// this guard.
+		slog.Info("empty message dropped",
+			"platform", msg.Platform, "msg_id", msg.MessageID,
+			"session", msg.SessionKey, "user", msg.UserName, "from_bot", msg.FromBot)
+		if !msg.FromBot {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgEmptyMessageDropped, e.name))
+		}
 		return
 	}
 
@@ -3039,6 +3058,15 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	} else {
 		msg.Content = content
 	}
+
+	// Message text audit (2026-10-15): persist the text the daemon actually
+	// received (after quote merge, before any gating) so a mis-dispatched
+	// prompt can be reconstructed from logs alone. Deliberate exception to
+	// the DEBUG-only rule above — diagnostic need outed by the empty-message
+	// investigation. Truncated; user text in local rotating log only.
+	slog.Info("message text audit",
+		"platform", msg.Platform, "msg_id", msg.MessageID,
+		"session", msg.SessionKey, "text", previewText(msg.Content, 2000))
 
 	// Rate limit check (per-user role-based, then global fallback)
 	if !e.checkRateLimit(msg) {
@@ -4043,7 +4071,8 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.currentMessageID = msg.MessageID
 	state.fromVoice = msg.FromVoice
 	state.sideText = ""
-	as := state.agentSession // capture under lock to avoid race with cleanup
+	state.firstEventAt = time.Time{} // fresh per turn; stamped on first agent event
+	as := state.agentSession         // capture under lock to avoid race with cleanup
 	state.mu.Unlock()
 
 	// Run Send concurrently with processInteractiveEvents. Some agents block inside
@@ -4059,8 +4088,28 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}()
 
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx, lockGen)
-	if elapsed := time.Since(sendStart); elapsed >= slowAgentSend {
-		slog.Warn("slow agent send", "elapsed", elapsed, "session", msg.SessionKey, "content_len", len(msg.Content))
+	// Turn metrics (2026-10-15 split): the old single "slow agent send"
+	// elapsed conflated two very different quantities. Report them as two
+	// real metrics on every turn:
+	//   send_latency  — send → first agent event (agent silent until then)
+	//   turn_duration — full turn wall time (≈ the old elapsed measurement)
+	state.mu.Lock()
+	firstEventAt := state.firstEventAt
+	state.mu.Unlock()
+	turnDuration := time.Since(sendStart)
+	metricAttrs := []any{"session", msg.SessionKey, "turn_duration", turnDuration}
+	if firstEventAt.IsZero() {
+		metricAttrs = append(metricAttrs, "send_latency", "no_output")
+	} else {
+		metricAttrs = append(metricAttrs, "send_latency", firstEventAt.Sub(sendStart))
+	}
+	slog.Info("agent turn metrics", metricAttrs...)
+	if !firstEventAt.IsZero() && firstEventAt.Sub(sendStart) >= slowSendLatency {
+		slog.Warn("slow agent first response",
+			"send_latency", firstEventAt.Sub(sendStart), "session", msg.SessionKey)
+	}
+	if turnDuration >= slowTurnDuration {
+		slog.Warn("long agent turn", "turn_duration", turnDuration, "session", msg.SessionKey)
 	}
 	stopTyping = nil // ownership transferred; prevent defer from double-stopping
 
@@ -5392,9 +5441,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 		if !firstEventLogged {
 			firstEventLogged = true
+			firstOutput := time.Now()
 			if elapsed := time.Since(waitStart); elapsed >= slowAgentFirstEvent {
 				slog.Warn("slow agent first event", "elapsed", elapsed, "session", sessionKey, "event_type", event.Type)
 			}
+			state.mu.Lock()
+			if state.firstEventAt.IsZero() {
+				state.firstEventAt = firstOutput
+			}
+			state.mu.Unlock()
 		}
 
 		state.mu.Lock()
