@@ -5113,7 +5113,24 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 					fullResponse = strings.Join(textParts, "")
 				}
 
-				if fullResponse != "" {
+				// Respect the NO_REPLY marker on this path too (patch 15).
+				// 2026-10-16: a turn tail emitted a bare NO_REPLY right after
+				// the foreground response was delivered (background
+				// notification landing at turn end) and the unsolicited
+				// reader relayed the literal marker into the chat. Mirror the
+				// foreground semantics: bare marker → suppress the whole
+				// segment; trailing marker → strip it and send what remains.
+				// History still records the raw text either way.
+				if isSilentReply(fullResponse) {
+					slog.Info("silent unsolicited reply suppressed",
+						"session", sessionKey, "response_len", len(fullResponse))
+				} else if stripped, ok := stripTrailingSilent(fullResponse); ok {
+					if strings.TrimSpace(stripped) != "" {
+						for _, chunk := range SplitMessageCodeFenceAware(stripped, maxPlatformMessageLen) {
+							e.send(p, replyCtx, chunk)
+						}
+					}
+				} else if fullResponse != "" {
 					for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
 						e.send(p, replyCtx, chunk)
 					}
