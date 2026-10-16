@@ -1534,8 +1534,23 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// emit a periodic warning, instead of failing open.
 	botOpenID := p.getBotOpenID()
 	filterActive := botOpenID != "" || p.IsGroupFilterDegraded()
-	if chatType == "group" && !p.groupReplyAll && filterActive {
+	// Patch 16 (2026-10-16): bot senders always require an @mention in group
+	// chats — group_reply_all is a human affordance and must not extend to
+	// app senders. Without this, every unaddressed peer-bot group message
+	// (receipts, notices, cross-bot chatter) spawns a full agent turn
+	// (~55k-token cold start observed 2026-10-15). Bots coordinate through
+	// real @mentions by protocol; p2p bot messages are unaffected, and the
+	// drop is log-only — replying to a bot is exactly the ping-pong hazard
+	// this gate exists to prevent.
+	if chatType == "group" && (!p.groupReplyAll || fromBot) && filterActive {
 		if !isBotMentioned(msg.Mentions, botOpenID) {
+			if fromBot {
+				slog.Info(p.tag()+": bot-sender group message without mention dropped (bot gate)",
+					"chat_id", chatID, "message_id", messageID,
+					"sender", userID, "msg_type", msgType,
+					"group_reply_all", p.groupReplyAll)
+				return nil
+			}
 			switch {
 			// Feishu @all sends {"text":"@_all"} with 0 mentions.
 			case p.respondToAtEveryoneAndHere && msg.Content != nil && strings.Contains(*msg.Content, "@_all"):
