@@ -14401,6 +14401,92 @@ func TestUnsolicitedReader_RelaysEventResult(t *testing.T) {
 	}
 }
 
+// TestUnsolicitedReader_SilentReplySuppressed verifies patch 15: the
+// unsolicited reader must respect the NO_REPLY marker the same way the
+// foreground path does. 2026-10-16: a turn tail emitted a bare NO_REPLY right
+// after the foreground response was delivered and the reader relayed the
+// literal marker into the chat. Bare marker → nothing sent; trailing marker
+// on mixed content → marker stripped, remainder sent; plain content → sent.
+func TestUnsolicitedReader_SilentReplySuppressed(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newControllableSession("unsol-silent")
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	defer e.Stop()
+
+	sessions := e.sessions
+	session := sessions.GetOrCreateActive("test:ch_silent:u1")
+
+	state := &interactiveState{
+		agentSession:     sess,
+		platform:         p,
+		replyCtx:         "ctx",
+		eventsNeedResync: false,
+	}
+	iKey := "test:ch_silent:u1"
+	e.interactiveMu.Lock()
+	e.interactiveStates[iKey] = state
+	e.interactiveMu.Unlock()
+
+	e.startUnsolicitedReader(state, session, sessions, iKey, "")
+	defer e.stopUnsolicitedReader(state)
+
+	// (1) Bare marker → suppressed entirely.
+	sess.events <- Event{Type: EventResult, Content: "NO_REPLY", Done: true}
+	// (2) Trailing marker on mixed content → strip marker, send remainder.
+	sess.events <- Event{Type: EventResult, Content: "step 1 done\nNO_REPLY", Done: true}
+	// (3) Plain content → relayed as before. The reader processes events
+	// sequentially, so once this lands, turns (1) and (2) are fully done —
+	// no sleep-based quiescence needed for the negative assertion.
+	sess.events <- Event{Type: EventResult, Content: "FINAL-REPORT", Done: true}
+
+	sent := waitForPlatformSend(p, 2, 5*time.Second)
+	if len(sent) < 2 {
+		t.Fatalf("expected 2 relayed messages (stripped remainder + plain), got %d: %v", len(sent), sent)
+	}
+	for _, s := range sent {
+		if strings.Contains(strings.ToUpper(s), "NO_REPLY") {
+			t.Errorf("NO_REPLY marker leaked to platform: %v", sent)
+		}
+	}
+	if !containsString(sent, "FINAL-REPORT") {
+		t.Errorf("plain unsolicited content not relayed: %v", sent)
+	}
+	if !containsExactTrimmed(sent, "step 1 done") {
+		t.Errorf("trailing-marker content should be relayed as 'step 1 done', got %v", sent)
+	}
+
+	// History records the raw responses either way.
+	history := session.GetHistory(0)
+	joined := ""
+	for _, h := range history {
+		joined += h.Content + "\n"
+	}
+	if !strings.Contains(joined, "NO_REPLY") {
+		t.Errorf("expected raw NO_REPLY turns preserved in session history")
+	}
+}
+
+// containsString reports whether any entry of msgs contains substr.
+func containsString(msgs []string, substr string) bool {
+	for _, m := range msgs {
+		if strings.Contains(m, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsExactTrimmed reports whether any entry of msgs equals s modulo
+// surrounding whitespace.
+func containsExactTrimmed(msgs []string, s string) bool {
+	for _, m := range msgs {
+		if strings.TrimSpace(m) == s {
+			return true
+		}
+	}
+	return false
+}
+
 // TestUnsolicitedReader_ResetsIdleCloseOnEventResult verifies the P1-C P1-1
 // fix: an unsolicited EventResult must re-arm the per-session idle close
 // timer. Before the fix, the idle timer was only scheduled at the end of
