@@ -1478,6 +1478,138 @@ func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
 	}
 }
 
+// TestOnMessageBotSenderGroupGate verifies patch 16: in a group with
+// group_reply_all=true (humans admitted without mention), a bot-sender
+// message without @mention is dropped log-only, while a bot-sender message
+// WITH @mention and a human message without @mention both pass.
+func TestOnMessageBotSenderGroupGate(t *testing.T) {
+	const appID = "cli_bot_gate"
+	const appSecret = "secret-bot-gate"
+	const botOpenID = "ou_bot"
+	const peerBotOpenID = "ou_peer_bot"
+	const userOpenID = "ou_user"
+	const chatID = "oc_chat"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			w.Header().Set("Content-Type", "application/json")
+			writeJSON(t, w, map[string]any{
+				"code":                0,
+				"msg":                 "success",
+				"expire":              7200,
+				"tenant_access_token": "tenant-token",
+			})
+			return
+		}
+		// Unknown calls (e.g. user/chat info lookups) return empty success
+		// so dispatch can continue past optional metadata fetches.
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "data": map[string]any{}})
+	}))
+	defer srv.Close()
+
+	received := make(chan *core.Message, 8)
+	p := &Platform{
+		platformName:  "feishu",
+		domain:        srv.URL,
+		appID:         appID,
+		appSecret:     appSecret,
+		botOpenID:     botOpenID,
+		groupReplyAll: true,
+		dedup:         &core.MessageDedup{},
+		client: lark.NewClient(appID, appSecret,
+			lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(srv.Client()),
+		),
+		handler: func(_ core.Platform, msg *core.Message) {
+			received <- msg
+		},
+	}
+
+	chatType := "group"
+	botSenderType := "app"
+	humanSenderType := "user"
+	now := time.Now().UnixMilli()
+	createTime := func() *string {
+		s := strconv.FormatInt(now, 10)
+		now++
+		return &s
+	}
+
+	buildEvent := func(msgID, senderID, senderType, content string, mentions []*larkim.MentionEvent) *larkim.P2MessageReceiveV1 {
+		return &larkim.P2MessageReceiveV1{
+			Event: &larkim.P2MessageReceiveV1Data{
+				Sender: &larkim.EventSender{
+					SenderId:   &larkim.UserId{OpenId: stringPtr(senderID)},
+					SenderType: &senderType,
+				},
+				Message: &larkim.EventMessage{
+					MessageId:   stringPtr(msgID),
+					ChatId:      stringPtr(chatID),
+					ChatType:    &chatType,
+					MessageType: stringPtr("text"),
+					Content:     stringPtr(content),
+					CreateTime:  createTime(),
+					Mentions:    mentions,
+				},
+			},
+		}
+	}
+
+	botMention := []*larkim.MentionEvent{
+		{
+			Key:  stringPtr("@_user_1"),
+			Id:   &larkim.UserId{OpenId: stringPtr(botOpenID)},
+			Name: stringPtr("claude code"),
+		},
+	}
+
+	// Step 1: peer-bot sender, no @mention, group_reply_all=true → the gate
+	// drops it log-only (this is the ~55k-token cold-start leak).
+	if err := p.onMessage(context.Background(), buildEvent("om_bot_gate_1", peerBotOpenID, botSenderType, `{"text":"任务落盘完成"}`, nil)); err != nil {
+		t.Fatalf("onMessage(bot without mention) error = %v", err)
+	}
+	select {
+	case msg := <-received:
+		t.Fatalf("bot-sender group message without mention should be dropped, but handler received %q", msg.MessageID)
+	case <-time.After(300 * time.Millisecond):
+		// expected: nothing dispatched
+	}
+
+	// Step 2: peer-bot sender WITH @bot mention → passes (protocol path).
+	if err := p.onMessage(context.Background(), buildEvent("om_bot_gate_2", peerBotOpenID, botSenderType, `{"text":"@_user_1 汇总一下结果"}`, botMention)); err != nil {
+		t.Fatalf("onMessage(bot with mention) error = %v", err)
+	}
+	select {
+	case msg := <-received:
+		if msg.MessageID != "om_bot_gate_2" {
+			t.Fatalf("expected dispatched om_bot_gate_2, got %q", msg.MessageID)
+		}
+		if !msg.FromBot {
+			t.Error("expected FromBot=true for app-sender message")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected @-mentioned bot message to be dispatched")
+	}
+
+	// Step 3: human sender, no @mention → passes (group_reply_all affordance
+	// must stay intact for humans).
+	if err := p.onMessage(context.Background(), buildEvent("om_bot_gate_3", userOpenID, humanSenderType, `{"text":"大家看一下"}`, nil)); err != nil {
+		t.Fatalf("onMessage(human without mention) error = %v", err)
+	}
+	select {
+	case msg := <-received:
+		if msg.MessageID != "om_bot_gate_3" {
+			t.Fatalf("expected dispatched om_bot_gate_3, got %q", msg.MessageID)
+		}
+		if msg.FromBot {
+			t.Error("expected FromBot=false for human-sender message")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected human message without mention to be dispatched under group_reply_all")
+	}
+}
+
 func extractBasePlatform(p core.Platform) *Platform {
 	if fp, ok := p.(*Platform); ok {
 		return fp
