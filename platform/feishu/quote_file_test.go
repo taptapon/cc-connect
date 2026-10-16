@@ -283,9 +283,7 @@ func TestDispatchMessageQuotedFileAcceptance(t *testing.T) {
 				"oc_chat",
 				replyContext{messageID: "om_child_" + sc.name, sessionKey: "feishu:oc_chat:ou_alice"},
 				sc.parentID,
-				0,
-				false,
-			)
+				0)
 
 			select {
 			case msg := <-got:
@@ -407,9 +405,7 @@ func TestDispatchMessageQuotedFileForeignUserDropped(t *testing.T) {
 		"oc_chat",
 		replyContext{messageID: "om_child_foreign", sessionKey: "feishu:oc_chat:ou_alice"},
 		parentMessageID,
-		0,
-		false,
-	)
+		0)
 
 	select {
 	case msg := <-got:
