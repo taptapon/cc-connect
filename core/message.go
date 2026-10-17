@@ -449,6 +449,15 @@ type Message struct {
 	// shared group would otherwise ping-pong hint messages at each other.
 	// Platforms that don't detect bot senders leave it false (treated human).
 	FromBot bool
+
+	// EmptyMentionTurn (patch 18, 2026-10-17): the platform admitted a
+	// human-sent empty text as an ADDRESSED signal — a real @mention in a
+	// group, or any empty text in p2p where every message is directed at the
+	// bot (feishu empty_mention_turn). The empty-message guard synthesizes
+	// the localized intent prompt for such messages so the agent can judge
+	// intent from conversation history, instead of the exchange dying in
+	// silence. Never set for bot senders (ping-pong hazard, patches 11/16).
+	EmptyMentionTurn bool
 }
 
 // EventType distinguishes different kinds of agent output.
