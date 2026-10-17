@@ -515,10 +515,13 @@ const (
 	MsgAliasNotFound   MsgKey = "alias_not_found"
 	MsgAliasUsage      MsgKey = "alias_usage"
 
-	MsgNewSessionCreated      MsgKey = "new_session_created"
-	MsgNewSessionCreatedName  MsgKey = "new_session_created_name"
-	MsgSessionAutoResetIdle   MsgKey = "session_auto_reset_idle"
-	MsgSessionClosingGraceful MsgKey = "session_closing_graceful"
+	MsgNewSessionCreated     MsgKey = "new_session_created"
+	MsgNewSessionCreatedName MsgKey = "new_session_created_name"
+	MsgSessionAutoResetIdle  MsgKey = "session_auto_reset_idle"
+	// Patch 17: merged idle-reset + graceful-close notice (live agent process);
+	// replaces the former standalone "closing graceful" notice so users get one
+	// message instead of two.
+	MsgSessionAutoResetIdleClosing MsgKey = "session_auto_reset_idle_closing"
 
 	MsgDeleteUsage              MsgKey = "delete_usage"
 	MsgDeleteSuccess            MsgKey = "delete_success"
@@ -3218,18 +3221,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "✅ Nueva sesión creada: **%s**",
 	},
 	MsgSessionAutoResetIdle: {
-		LangEnglish:            "⏰ The %s session was idle for over %d minute(s) and has been switched to a new one. Your latest message will be handled by the new session (quoted reply context is carried over).",
-		LangChinese:            "⏰ %s 的会话因空闲超过 %d 分钟，已自动切换到新会话。你刚才的消息将由新会话继续处理（引用的回复上下文会一并转交）。",
-		LangTraditionalChinese: "⏰ %s 的會話因閒置超過 %d 分鐘，已自動切換到新會話。你剛才的訊息將由新會話繼續處理（引用的回覆上下文會一併轉交）。",
-		LangJapanese:           "⏰ %s のセッションが %d 分以上アイドルだったため、新しいセッションに切り替えました。送信されたメッセージは新しいセッションが処理します（引用された返信の文脈も引き継がれます）。",
-		LangSpanish:            "⏰ La sesión de %s estuvo inactiva más de %d minuto(s) y se cambió a una nueva. Tu último mensaje será atendido por la nueva sesión (el contexto citado se transfiere).",
+		LangEnglish:            "⏰ The %s session was idle over %d min and has been switched to a new one; your message will be handled by the new session (quoted context carried over).",
+		LangChinese:            "⏰ %s 会话空闲超 %d 分钟，已切换新会话；你的消息由新会话处理（引用上下文一并转交）。",
+		LangTraditionalChinese: "⏰ %s 的會話閒置超過 %d 分鐘，已切換新會話；你的訊息由新會話處理（引用上下文一併轉交）。",
+		LangJapanese:           "⏰ %s のセッションが %d 分以上アイドルだったため新セッションに切り替えました。メッセージは新セッションが処理します（引用文脈も引き継ぎ）。",
+		LangSpanish:            "⏰ La sesión de %s estuvo inactiva más de %d min y se cambió a una nueva; tu mensaje lo atenderá la nueva sesión (el contexto citado se transfiere).",
 	},
-	MsgSessionClosingGraceful: {
-		LangEnglish:            "⏳ Wrapping up the previous %s session (usually a few seconds, up to 2 minutes). Your message will be handled by the new session once it starts.",
-		LangChinese:            "⏳ 正在结束 %s 的上一个会话（通常几秒，最多 2 分钟）；完成后你的消息将由新会话接手。",
-		LangTraditionalChinese: "⏳ 正在結束 %s 的上一個會話（通常幾秒，最多 2 分鐘）；完成後你的訊息將由新會話接手。",
-		LangJapanese:           "⏳ %s の前のセッションを終了中です（通常は数秒、最大 2 分）。完了後、あなたのメッセージは新しいセッションが引き継ぎます。",
-		LangSpanish:            "⏳ Cerrando la sesión anterior de %s (normalmente unos segundos, hasta 2 minutos). Tu mensaje será atendido por la nueva sesión cuando arranque.",
+	// Patch 17: single merged notice for the live-agent path (idle threshold +
+	// graceful-close warning + message fate), sent once before the close.
+	MsgSessionAutoResetIdleClosing: {
+		LangEnglish:            "⏰ The %s session was idle over %d min; switching to a new one (wrapping up the old session, up to 2 min). Your message will be handled by the new session (quoted context carried over).",
+		LangChinese:            "⏰ %s 会话空闲超 %d 分钟，正在切换新会话（旧会话收尾中，最多 2 分钟）；你的消息由新会话处理（引用上下文一并转交）。",
+		LangTraditionalChinese: "⏰ %s 的會話閒置超過 %d 分鐘，正在切換新會話（舊會話收尾中，最多 2 分鐘）；你的訊息由新會話處理（引用上下文一併轉交）。",
+		LangJapanese:           "⏰ %s のセッションが %d 分以上アイドルのため新セッションに切り替え中です（旧セッションの終了に最大 2 分）。メッセージは新セッションが処理します（引用文脈も引き継ぎ）。",
+		LangSpanish:            "⏰ La sesión de %s estuvo inactiva más de %d min; cambiando a una nueva (cerrando la sesión anterior, hasta 2 min). Tu mensaje lo atenderá la nueva sesión (el contexto citado se transfiere).",
 	},
 	MsgDeleteUsage: {
 		LangEnglish:            "Usage: `/delete <number>` or `/delete 1,2,3` or `/delete 3-7` or `/delete 1,3-5,8`.\nUse `/list` to see session numbers.",

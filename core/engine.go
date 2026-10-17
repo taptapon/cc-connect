@@ -3368,18 +3368,13 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions 
 	)
 
 	// Check if the old session has an agent process that needs graceful
-	// shutdown. If so, tell the user we're wrapping up before blocking.
+	// shutdown. If so, the close can block (Stop hooks up to 120s) and the
+	// user must be told before it starts — via the single merged notice
+	// below (patch 17), not a separate pre-close message.
 	e.interactiveMu.Lock()
 	state, hasState := e.interactiveStates[interactiveKey]
 	hasAgent := hasState && state != nil && state.agentSession != nil && state.agentSession.Alive()
 	e.interactiveMu.Unlock()
-
-	if hasAgent {
-		// Notify the user before the potentially long close. The close
-		// returns as soon as the process exits (usually seconds), but
-		// Stop hooks can take up to 120s.
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionClosingGraceful, e.name))
-	}
 
 	// Lock the replacement session BEFORE releasing the old one (#1847 /
 	// #1832). If the new lock fails we must return with the old session
@@ -3394,11 +3389,21 @@ func (e *Engine) maybeAutoResetSessionOnIdle(p Platform, msg *Message, sessions 
 		return nil, 0
 	}
 
+	// Patch 17: one notice per reset instead of two. With a live agent
+	// process, send the merged notice (threshold + close warning + message
+	// fate) before the potentially long close and skip the post-close
+	// notice; without one, the short post-close notice suffices.
+	if hasAgent {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdleClosing, e.name, int(e.resetOnIdle/time.Minute)))
+	}
+
 	// New session is locked — now safe to release the old one.
 	e.cleanupInteractiveState(interactiveKey)
 	session.UnlockWithoutUpdate(lockGen)
 
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdle, e.name, int(e.resetOnIdle/time.Minute)))
+	if !hasAgent {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSessionAutoResetIdle, e.name, int(e.resetOnIdle/time.Minute)))
+	}
 	return newSession, newGen
 }
 
