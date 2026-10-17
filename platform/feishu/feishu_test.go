@@ -2779,3 +2779,27 @@ func TestDispatchMessageEmptyMentionTurn(t *testing.T) {
 		expectNone(t, got, "empty_mention_turn=false should keep the legacy drop")
 	})
 }
+
+// TestNewEmptyMentionTurnDefault verifies patch 18's default (maintainer
+// ruling 2026-10-17): the feature is ON unless explicitly disabled with
+// empty_mention_turn = false.
+func TestNewEmptyMentionTurnDefault(t *testing.T) {
+	base := map[string]any{"app_id": "cli_def", "app_secret": "secret-def"}
+
+	p, err := newPlatform("feishu", "https://open.feishu.cn", base)
+	if err != nil {
+		t.Fatalf("newPlatform(default opts) error = %v", err)
+	}
+	if !p.(*interactivePlatform).Platform.emptyMentionTurn {
+		t.Error("emptyMentionTurn = false with no config, want default ON")
+	}
+
+	off := map[string]any{"app_id": "cli_def", "app_secret": "secret-def", "empty_mention_turn": false}
+	p2, err := newPlatform("feishu", "https://open.feishu.cn", off)
+	if err != nil {
+		t.Fatalf("newPlatform(explicit false) error = %v", err)
+	}
+	if p2.(*interactivePlatform).Platform.emptyMentionTurn {
+		t.Error("emptyMentionTurn = true with explicit false, want OFF")
+	}
+}
