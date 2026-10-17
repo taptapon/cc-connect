@@ -283,6 +283,7 @@ const (
 	MsgVoiceNotEnabled               MsgKey = "voice_not_enabled"
 	MsgVoiceUsingPlatformRecognition MsgKey = "voice_using_platform_recognition"
 	MsgEmptyMessageDropped           MsgKey = "empty_message_dropped"
+	MsgEmptyMentionPrompt            MsgKey = "empty_mention_prompt"
 	MsgVoiceNoFFmpeg                 MsgKey = "voice_no_ffmpeg"
 	MsgVoiceTranscribing             MsgKey = "voice_transcribing"
 	MsgVoiceTranscribed              MsgKey = "voice_transcribed"
@@ -1701,6 +1702,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "ℹ️ 收到一條空訊息（無正文、無附件），**%s** 未啟動處理；請直接輸入內容。",
 		LangJapanese:           "ℹ️ 空のメッセージを受信しました（本文・添付なし）。**%s** は処理を開始していません。リクエストを入力してください。",
 		LangSpanish:            "ℹ️ Se recibió un mensaje vacío (sin texto ni adjuntos): **%s** no inició ningún procesamiento. Escribe tu solicitud.",
+	},
+	MsgEmptyMentionPrompt: {
+		LangEnglish:            "(The user sent only a mention for you with no text. Judge their intent from the recent conversation history: if they are continuing a topic, pick it up; if they are calling you, reply briefly; if you cannot tell or it looks accidental, reply with one short confirmation.)",
+		LangChinese:            "（用户仅发送了对你的提及，未输入文字。请结合近期对话历史判断其意图：延续话题则接话，呼叫应答则简短回应；无法判断或疑似误触，仅用一句话确认。）",
+		LangTraditionalChinese: "（用戶僅發送了對你的提及，未輸入文字。請結合近期對話歷史判斷其意圖：延續話題則接話，呼叫應答則簡短回應；無法判斷或疑似誤觸，僅用一句話確認。）",
+		LangJapanese:           "（ユーザーはあなたへのメンションのみを送信し、本文はありません。最近の会話履歴から意図を判断してください。話題の継続なら引き継ぎ、呼び出しなら簡潔に応答し、判断できない・誤操作の疑いなら一言だけ確認してください。）",
+		LangSpanish:            "(El usuario envió solo una mención sin texto. Juzga su intención a partir del historial reciente de la conversación: si continúa un tema, retómalo; si te está llamando, responde brevemente; si no puedes saberlo o parece accidental, responde con una sola confirmación breve.)",
 	},
 	MsgVoiceUsingPlatformRecognition: {
 		LangEnglish:            "⚠️ Voice transcription not configured, using %s built-in recognition",

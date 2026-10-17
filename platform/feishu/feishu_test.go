@@ -83,6 +83,7 @@ func TestDispatchMessageDropsRecalledMessageBeforeHandler(t *testing.T) {
 		"",
 		0,
 		false,
+		"p2p",
 	)
 
 	if called {
@@ -190,6 +191,7 @@ func TestDispatchMessageIncludesQuotedImage(t *testing.T) {
 				parentMessageID,
 				0,
 				false,
+				"group",
 			)
 
 			select {
@@ -292,6 +294,7 @@ func TestDispatchMessageKeepsMentionOnlyQuotedText(t *testing.T) {
 		parentMessageID,
 		0,
 		false,
+		"group",
 	)
 
 	select {
@@ -1934,6 +1937,7 @@ func TestDispatchMessageCoalescesImageBatch(t *testing.T) {
 					"", // no parentID so we exercise the batch path
 					int64(1710000000000+i),
 					false,
+					"group",
 				)
 			}
 
@@ -2036,6 +2040,7 @@ func TestDispatchMessageSingleImageRegression(t *testing.T) {
 		replyContext{messageID: "om_single", chatID: "oc_single", sessionKey: "feishu:oc_single:ou_user"},
 		"", 0,
 		false,
+		"group",
 	)
 
 	select {
@@ -2131,6 +2136,7 @@ func TestDispatchMessageQuotedImageNotBatched(t *testing.T) {
 		replyContext{messageID: "om_quoted_child", chatID: "oc_chat", sessionKey: "feishu:oc_chat:ou_user"},
 		parentMessageID, 0,
 		false,
+		"group",
 	)
 
 	select {
@@ -2472,6 +2478,7 @@ func TestDispatchMessagePostWithFiles(t *testing.T) {
 		"",
 		0,
 		false,
+		"group",
 	)
 
 	select {
@@ -2645,4 +2652,130 @@ func TestBuildReplyContent_HumanMentionMarkdownConvertsToCardSyntax(t *testing.T
 	if !strings.Contains(body, `at id=`) || !strings.Contains(body, `ou_human123`) {
 		t.Fatalf("card body must use card at-syntax, got: %s", body)
 	}
+}
+
+// TestDispatchMessageEmptyMentionTurn verifies patch 18: with
+// empty_mention_turn on, a human-sent empty text (mention-only) is admitted
+// as an empty mention turn — in groups only with a real @mention of this
+// bot, in p2p unconditionally — while bot senders and mention-less group
+// empties stay dropped, and with the feature off the legacy silent drop
+// remains.
+func TestDispatchMessageEmptyMentionTurn(t *testing.T) {
+	const botOpenID = "ou_bot"
+	const userOpenID = "ou_user"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		writeJSON(t, w, map[string]any{"code": 0, "msg": "success", "data": map[string]any{}})
+	}))
+	defer srv.Close()
+
+	newPlatform := func(emptyMentionTurn bool, got chan *core.Message) *Platform {
+		return &Platform{
+			platformName:     "feishu",
+			domain:           srv.URL,
+			appID:            "cli_empty_mention",
+			appSecret:        "secret-empty-mention",
+			botOpenID:        botOpenID,
+			emptyMentionTurn: emptyMentionTurn,
+			dedup:            &core.MessageDedup{},
+			client: lark.NewClient("cli_empty_mention", "secret-empty-mention",
+				lark.WithOpenBaseUrl(srv.URL),
+				lark.WithHttpClient(srv.Client()),
+			),
+			handler: func(_ core.Platform, msg *core.Message) { got <- msg },
+		}
+	}
+
+	botMention := []*larkim.MentionEvent{
+		{
+			Key:  stringPtr("@_user_1"),
+			Id:   &larkim.UserId{OpenId: stringPtr(botOpenID)},
+			Name: stringPtr("claude code"),
+		},
+	}
+
+	dispatch := func(p *Platform, msgID, chatType, content string, mentions []*larkim.MentionEvent, fromBot bool) {
+		p.dispatchMessage(
+			context.Background(),
+			"text",
+			content,
+			mentions,
+			msgID,
+			"feishu:oc_chat:"+userOpenID,
+			userOpenID,
+			"oc_chat",
+			replyContext{messageID: msgID, sessionKey: "feishu:oc_chat:" + userOpenID},
+			"",
+			0,
+			fromBot,
+			chatType,
+		)
+	}
+
+	expectNone := func(t *testing.T, got chan *core.Message, why string) {
+		t.Helper()
+		select {
+		case msg := <-got:
+			t.Fatalf("%s, but handler received %q", why, msg.MessageID)
+		case <-time.After(400 * time.Millisecond):
+		}
+	}
+	expectOne := func(t *testing.T, got chan *core.Message) *core.Message {
+		t.Helper()
+		select {
+		case msg := <-got:
+			return msg
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for dispatch")
+			return nil
+		}
+	}
+
+	t.Run("group mention-only human admitted", func(t *testing.T) {
+		got := make(chan *core.Message, 1)
+		p := newPlatform(true, got)
+		dispatch(p, "om_pm18_g1", "group", `{"text":"@_user_1"}`, botMention, false)
+		msg := expectOne(t, got)
+		if !msg.EmptyMentionTurn {
+			t.Error("EmptyMentionTurn = false, want true")
+		}
+		if msg.FromBot {
+			t.Error("FromBot = true, want false")
+		}
+		if msg.Content != "" {
+			t.Errorf("Content = %q, want empty (core synthesizes the prompt)", msg.Content)
+		}
+	})
+
+	t.Run("group empty without mention still dropped", func(t *testing.T) {
+		got := make(chan *core.Message, 1)
+		p := newPlatform(true, got)
+		dispatch(p, "om_pm18_g2", "group", `{"text":""}`, nil, false)
+		expectNone(t, got, "mention-less group empty should be dropped")
+	})
+
+	t.Run("bot sender stays dropped even when mentioned", func(t *testing.T) {
+		got := make(chan *core.Message, 1)
+		p := newPlatform(true, got)
+		dispatch(p, "om_pm18_b1", "group", `{"text":"@_user_1"}`, botMention, true)
+		expectNone(t, got, "bot-sender empty mention should stay dropped")
+	})
+
+	t.Run("p2p empty admitted without mention", func(t *testing.T) {
+		got := make(chan *core.Message, 1)
+		p := newPlatform(true, got)
+		dispatch(p, "om_pm18_p1", "p2p", `{"text":""}`, nil, false)
+		msg := expectOne(t, got)
+		if !msg.EmptyMentionTurn {
+			t.Error("EmptyMentionTurn = false, want true")
+		}
+	})
+
+	t.Run("feature off keeps legacy silent drop", func(t *testing.T) {
+		got := make(chan *core.Message, 1)
+		p := newPlatform(false, got)
+		dispatch(p, "om_pm18_off1", "group", `{"text":"@_user_1"}`, botMention, false)
+		expectNone(t, got, "empty_mention_turn=false should keep the legacy drop")
+	})
 }

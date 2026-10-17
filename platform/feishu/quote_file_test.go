@@ -285,6 +285,7 @@ func TestDispatchMessageQuotedFileAcceptance(t *testing.T) {
 				sc.parentID,
 				0,
 				false,
+				"group",
 			)
 
 			select {
@@ -409,6 +410,7 @@ func TestDispatchMessageQuotedFileForeignUserDropped(t *testing.T) {
 		parentMessageID,
 		0,
 		false,
+		"group",
 	)
 
 	select {

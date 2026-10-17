@@ -3030,20 +3030,35 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 
 	content := strings.TrimSpace(msg.Content)
 	if content == "" && strings.TrimSpace(msg.ExtraContent) == "" && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
-		// Empty-message guard (root-cure, 2026-10-15): nothing usable in the
-		// message — never spawn an agent turn on it. Reply with a fixed hint
-		// so humans aren't left in silence; stay SILENT for bot senders, or
-		// two bots in a shared group would answer each other's empties and
-		// ping-pong hint messages forever. ExtraContent is trimmed too: a
-		// whitespace-only reply quote must not smuggle an empty prompt past
-		// this guard.
-		slog.Info("empty message dropped",
-			"platform", msg.Platform, "msg_id", msg.MessageID,
-			"session", msg.SessionKey, "user", msg.UserName, "from_bot", msg.FromBot)
-		if !msg.FromBot {
-			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgEmptyMessageDropped, e.name))
+		// Patch 18 (2026-10-17): a platform-admitted empty mention turn
+		// (human sender, ADDRESSED — a real @mention in a group, or any empty
+		// text in p2p) is an intent signal, not noise. Synthesize the
+		// localized intent prompt so the agent judges what the user meant
+		// from conversation history instead of the exchange dying in silence.
+		// Bot senders can never carry this flag (platforms refuse to set it),
+		// so the ping-pong hazard is untouched.
+		if msg.EmptyMentionTurn && !msg.FromBot {
+			slog.Info("empty mention turn: synthesizing intent prompt",
+				"platform", msg.Platform, "msg_id", msg.MessageID,
+				"session", msg.SessionKey, "user", msg.UserName)
+			msg.Content = e.i18n.T(MsgEmptyMentionPrompt)
+			content = strings.TrimSpace(msg.Content)
+		} else {
+			// Empty-message guard (root-cure, 2026-10-15): nothing usable in the
+			// message — never spawn an agent turn on it. Reply with a fixed hint
+			// so humans aren't left in silence; stay SILENT for bot senders, or
+			// two bots in a shared group would answer each other's empties and
+			// ping-pong hint messages forever. ExtraContent is trimmed too: a
+			// whitespace-only reply quote must not smuggle an empty prompt past
+			// this guard.
+			slog.Info("empty message dropped",
+				"platform", msg.Platform, "msg_id", msg.MessageID,
+				"session", msg.SessionKey, "user", msg.UserName, "from_bot", msg.FromBot)
+			if !msg.FromBot {
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgEmptyMessageDropped, e.name))
+			}
+			return
 		}
-		return
 	}
 
 	// Resolve aliases on user text BEFORE merging ExtraContent, so reply
