@@ -105,3 +105,56 @@ func TestHandleMessage_NonEmptyMessageStillProcessed(t *testing.T) {
 	}
 	t.Fatal("non-empty message never produced an agent reply — guard is misfiring")
 }
+
+func TestHandleMessage_EmptyMentionTurnSynthesizesPrompt(t *testing.T) {
+	// Patch 18: a platform-admitted empty mention turn is an ADDRESSED
+	// signal — the guard synthesizes the localized intent prompt and the
+	// agent receives it as the turn prompt, instead of the fixed hint or
+	// silence. Reading sentPrompts after waitSent is race-free: the reply
+	// path takes p.mu, giving a happens-before edge with Send's write.
+	p := &stubPlatformEngine{n: "test"}
+	session := newResultAgentSession("ok")
+	e := NewEngine("proj", &resultAgent{session: session}, []Platform{p}, "", LangEnglish)
+
+	e.handleMessage(p, &Message{
+		SessionKey: "test:u1", Platform: "test", UserID: "u1", UserName: "user",
+		Content:          "",
+		EmptyMentionTurn: true,
+		ReplyCtx:         "ctx",
+	})
+
+	sent := waitSent(t, p)
+	if len(sent) == 0 {
+		t.Fatal("empty mention turn produced no agent reply — guard dropped it")
+	}
+	if strings.Contains(sent[0], "empty message") || strings.Contains(sent[0], "ℹ️") {
+		t.Errorf("reply looks like the fixed hint, want an agent reply to the synthesized prompt: %q", sent[0])
+	}
+	if len(session.sentPrompts) != 1 {
+		t.Fatalf("agent prompts = %v, want exactly the synthesized intent prompt", session.sentPrompts)
+	}
+	if !strings.Contains(session.sentPrompts[0], "mention") {
+		t.Errorf("synthesized prompt should mention the empty mention, got %q", session.sentPrompts[0])
+	}
+}
+
+func TestHandleMessage_EmptyMentionTurnFromBotStaysSilent(t *testing.T) {
+	// Defensive: platforms never set EmptyMentionTurn for bot senders, but
+	// the guard must not let a (FromBot, EmptyMentionTurn) combination
+	// through — two bots trading empties would ping-pong full turns.
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("proj", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	e.handleMessage(p, &Message{
+		SessionKey: "test:u1", Platform: "test", UserID: "ou_bot", UserName: "peer-bot",
+		Content:          "",
+		FromBot:          true,
+		EmptyMentionTurn: true,
+		ReplyCtx:         "ctx",
+	})
+
+	time.Sleep(200 * time.Millisecond)
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("sent = %v, want silence for bot-sent empty mention turn", sent)
+	}
+}

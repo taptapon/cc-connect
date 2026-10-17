@@ -102,6 +102,8 @@ func TestDispatchMessageMediaDownloadsVideo(t *testing.T) {
 			replyContext{messageID: messageID, sessionKey: "feishu:oc_chat:" + currentUser},
 			"",
 			0,
+			false,
+			"",
 		)
 		select {
 		case msg := <-got:

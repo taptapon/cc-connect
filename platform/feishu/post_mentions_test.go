@@ -31,7 +31,7 @@ func TestDispatchPostMention_PreservesSlashCommand(t *testing.T) {
 			}
 			p.dispatchMessage(context.Background(), "post", content,
 				[]*larkim.MentionEvent{postMentionForTest("@_user_1", "ou_bot", "ExampleBot")},
-				"om_post", "feishu:oc_chat:ou_user", "ou_user", "oc_chat", replyContext{}, "", 0)
+				"om_post", "feishu:oc_chat:ou_user", "ou_user", "oc_chat", replyContext{}, "", 0, false, "")
 			if got == nil || got.Content != "/new incident-triage" {
 				t.Fatalf("dispatch = %#v, want slash command without the bot mention", got)
 			}
@@ -51,7 +51,7 @@ func TestDispatchPostMention_PreservesOtherUsersAndEveryone(t *testing.T) {
 		[]*larkim.MentionEvent{
 			postMentionForTest("@_user_1", "ou_bot", "ExampleBot"),
 			postMentionForTest("@_user_2", "ou_other", "ExampleBot"),
-		}, "om_post", "feishu:oc_chat:ou_user", "ou_user", "oc_chat", replyContext{}, "", 0)
+		}, "om_post", "feishu:oc_chat:ou_user", "ou_user", "oc_chat", replyContext{}, "", 0, false, "")
 	if got == nil || got.Content != "@ExampleBot\n@all\nhello" {
 		t.Fatalf("dispatch = %#v, want other user's same-name mention and @all preserved", got)
 	}

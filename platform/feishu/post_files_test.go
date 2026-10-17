@@ -75,7 +75,7 @@ func TestDispatchPostPreservesFileAttachments(t *testing.T) {
 				fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
 				handler:              func(_ core.Platform, m *core.Message) { got = m },
 			}
-			p.dispatchMessage(context.Background(), "post", tc.body, nil, "om_post", "session", "", "", replyContext{}, "", 0)
+			p.dispatchMessage(context.Background(), "post", tc.body, nil, "om_post", "session", "", "", replyContext{}, "", 0, false, "")
 			if got == nil {
 				t.Fatal("post was silently dropped")
 			}
@@ -229,7 +229,7 @@ func TestDispatchFileMessageUsesContentSniffing(t *testing.T) {
 		fetchResourceToken:   func(_ context.Context) (string, error) { return "test-token", nil },
 		handler:              func(_ core.Platform, m *core.Message) { got = m },
 	}
-	p.dispatchMessage(context.Background(), "file", `{"file_key":"file_a","file_name":"a.csv"}`, nil, "om_file", "session", "", "", replyContext{}, "", 0)
+	p.dispatchMessage(context.Background(), "file", `{"file_key":"file_a","file_name":"a.csv"}`, nil, "om_file", "session", "", "", replyContext{}, "", 0, false, "")
 	if got == nil || len(got.Files) != 1 {
 		t.Fatalf("file message not dispatched: %+v", got)
 	}

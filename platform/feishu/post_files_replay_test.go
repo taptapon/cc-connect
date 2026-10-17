@@ -40,7 +40,7 @@ func TestPostFilesLiveReplay(t *testing.T) {
 			}
 			var got *core.Message
 			p := &Platform{platformName: "feishu", client: lark.NewClient(id, secret), handler: func(_ core.Platform, m *core.Message) { got = m }}
-			p.dispatchMessage(context.Background(), "post", string(body), nil, tc.MessageID, "replay", "", "", replyContext{}, "", 0)
+			p.dispatchMessage(context.Background(), "post", string(body), nil, tc.MessageID, "replay", "", "", replyContext{}, "", 0, false, "")
 			if got == nil || len(got.Files) != 1 {
 				t.Fatal("real attachment did not reach core handler")
 			}

@@ -383,7 +383,7 @@ func TestDispatchMessage_UnhandledMessageTypes(t *testing.T) {
 			var got []*core.Message
 			p := newMessageTypesPlatform(t, "", "", "", func(_ core.Platform, msg *core.Message) { got = append(got, msg) })
 			p.dispatchMessage(context.Background(), tc.msgType, tc.content, nil, "om_"+tc.msgType, "feishu:oc_p2p:ou_alice",
-				"ou_alice", "oc_p2p", replyContext{messageID: "om_" + tc.msgType, chatID: "oc_p2p"}, "", 0)
+				"ou_alice", "oc_p2p", replyContext{messageID: "om_" + tc.msgType, chatID: "oc_p2p"}, "", 0, false, "")
 			switch {
 			case tc.want == "" && len(got) != 0:
 				t.Fatalf("%s message dispatched with Content %q, want it ignored", tc.msgType, got[0].Content)
@@ -411,7 +411,7 @@ func TestFetchQuotedMessage_DescribesUnhandledTypes(t *testing.T) {
 			var got []*core.Message
 			p := newMessageTypesPlatform(t, "om_parent", tc.parentType, tc.parentContent, func(_ core.Platform, msg *core.Message) { got = append(got, msg) })
 			p.dispatchMessage(context.Background(), "text", `{"text":"when does it start?"}`, nil, "om_reply", "feishu:oc_p2p:ou_alice",
-				"ou_alice", "oc_p2p", replyContext{messageID: "om_reply", chatID: "oc_p2p"}, "om_parent", 0)
+				"ou_alice", "oc_p2p", replyContext{messageID: "om_reply", chatID: "oc_p2p"}, "om_parent", 0, false, "")
 			if len(got) != 1 {
 				t.Fatalf("reply dispatched %d times, want 1", len(got))
 			}

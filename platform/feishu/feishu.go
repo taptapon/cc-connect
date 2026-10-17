@@ -157,6 +157,12 @@ type Platform struct {
 	groupReplyAll              bool
 	skipWhenMentionOthers      bool
 	groupReplyAllChats         map[string]struct{}
+	// emptyMentionTurn (patch 18, 2026-10-17): admit human-sent empty-text
+	// messages as addressed "mention turns" instead of dropping them — p2p
+	// always (every message there is directed at the bot), groups only with a
+	// real mention of this bot. Core synthesizes the localized intent
+	// prompt. Bot senders always stay dropped (ping-pong, patches 11/16).
+	emptyMentionTurn           bool
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
@@ -464,6 +470,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	if err != nil {
 		return nil, fmt.Errorf("%s: invalid group_reply_all_chats: %w", name, err)
 	}
+	emptyMentionTurn, _ := opts["empty_mention_turn"].(bool)
 	// require_mention = false is equivalent to group_reply_all = true:
 	// both mean "respond to all group messages without needing an @mention".
 	if v, ok := opts["require_mention"].(bool); ok && !v {
@@ -636,6 +643,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		groupReplyAll:              groupReplyAll,
 		skipWhenMentionOthers:      skipWhenMentionOthers,
 		groupReplyAllChats:         groupReplyAllChats,
+		emptyMentionTurn:           emptyMentionTurn,
 		respondToAtEveryoneAndHere: respondToAtEveryoneAndHere,
 		shareSessionInChannel:      shareSessionInChannel,
 		threadIsolation:            threadIsolation,
@@ -2302,7 +2310,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx, staged, fromBot)
+	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx, staged, fromBot, chatType)
 
 	return nil
 }
@@ -2323,11 +2331,11 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 // dispatchMessage handles the message content parsing, media download, and
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
-func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
-	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{}, nil, false)
+func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, fromBot bool, chatType string) {
+	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{}, nil, fromBot, chatType)
 }
 
-func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext, staged []stagedAttachment, fromBot bool) {
+func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext, staged []stagedAttachment, fromBot bool, chatType string) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -2393,6 +2401,29 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 		quotedFiles := p.downloadQuotedFiles(ctx, approvedFileMetas)
 		if text == "" && historyText == "" && quoted.text == "" && len(quoted.images) == 0 && len(quotedFiles) == 0 &&
 			len(stagedImages) == 0 && len(stagedFiles) == 0 {
+			// Patch 18 (2026-10-17): a human sending only a mention (text
+			// emptied by mention stripping) is an ADDRESSED signal, not noise.
+			// When empty_mention_turn is on, admit it as an empty mention
+			// turn — p2p unconditionally (every p2p message is directed at
+			// the bot), groups only with a real mention of this bot. Core
+			// synthesizes the localized intent prompt; the agent judges
+			// intent from history. Bot senders always stay dropped (the
+			// ping-pong hazard of patches 11/16).
+			if !fromBot && p.emptyMentionTurn && (chatType != "group" || isBotMentioned(mentions, p.getBotOpenID())) {
+				slog.Info(p.tag()+": empty human text admitted as mention turn (patch 18)",
+					"chat_id", chatID, "message_id", messageID,
+					"chat_type", chatType, "sender", userID)
+				p.dispatchCoreMessage(&core.Message{
+					SessionKey: sessionKey, Platform: p.platformName,
+					MessageID: messageID,
+					UserID:    userID, UserName: userName, ChatName: chatName,
+					FromBot:          fromBot,
+					EmptyMentionTurn: true,
+					Content:          text, ExtraContent: quotedExtra, Images: quoted.images, Files: quotedFiles, ReplyCtx: rctx,
+					UserMessageTimeMs: createTimeMs,
+				})
+				return
+			}
 			slog.Debug(p.tag()+": dropping empty text after mention stripping",
 				"message_id", messageID,
 				"raw_text_len", len(textBody.Text),
@@ -2515,6 +2546,22 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 		images = append(images, stagedImages...)
 		files = append(files, stagedFiles...)
 		if text == "" && historyText == "" && len(images) == 0 && len(files) == 0 && quoted.text == "" && len(quoted.images) == 0 {
+			// Patch 18: same admit-as-mention-turn rule as the text case.
+			if !fromBot && p.emptyMentionTurn && (chatType != "group" || isBotMentioned(mentions, p.getBotOpenID())) {
+				slog.Info(p.tag()+": empty human post admitted as mention turn (patch 18)",
+					"chat_id", chatID, "message_id", messageID,
+					"chat_type", chatType, "sender", userID)
+				p.dispatchCoreMessage(&core.Message{
+					SessionKey: sessionKey, Platform: p.platformName,
+					MessageID: messageID,
+					UserID:    userID, UserName: userName, ChatName: chatName,
+					FromBot:          fromBot,
+					EmptyMentionTurn: true,
+					Content:          text, ExtraContent: quoted.text, Images: quoted.images, Files: files, ReplyCtx: rctx,
+					UserMessageTimeMs: createTimeMs,
+				})
+				return
+			}
 			return
 		}
 		// Flush any image batch buffered earlier in this session (#1686 P1-B).
