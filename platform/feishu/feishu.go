@@ -470,7 +470,13 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	if err != nil {
 		return nil, fmt.Errorf("%s: invalid group_reply_all_chats: %w", name, err)
 	}
-	emptyMentionTurn, _ := opts["empty_mention_turn"].(bool)
+	// empty_mention_turn (patch 18) DEFAULTS ON (maintainer ruling 2026-10-17):
+	// empty human mentions are intent signals; set false explicitly to restore
+	// the legacy silent drop.
+	emptyMentionTurn := true
+	if v, ok := opts["empty_mention_turn"].(bool); ok {
+		emptyMentionTurn = v
+	}
 	// require_mention = false is equivalent to group_reply_all = true:
 	// both mean "respond to all group messages without needing an @mention".
 	if v, ok := opts["require_mention"].(bool); ok && !v {
