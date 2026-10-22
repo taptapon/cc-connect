@@ -1,16 +1,18 @@
-# 本地补丁集（分支 `local/v1.5.1-beta.3-patched`）
-
+# 本地补丁集（分支 `local/main-patched`）
+>
 > 本文件只记录**这组本地改动本身**：改了什么、为什么改、动到哪些文件、回归测试在哪。
 > **不含部署侧信息**（构建产物装到哪、如何安装/升级/回滚）——那属于运行方的运维文档，不在本仓。
 >
-> English: this document lists the local patch set carried by the `local/v1.5.1-beta.3-patched`
-> branch on top of upstream `v1.5.1-beta.3`. Install / upgrade / rollback steps are intentionally out of scope.
+> English: this document lists the local patch set carried by the `local/main-patched`
+> branch on top of upstream `main` (`afbbc240`, 2026-10-22). Install / upgrade / rollback
+> steps are intentionally out of scope.
 
 ## 分支
 
 | 分支 | 基线 | 用途 |
 |---|---|---|
-| `local/v1.5.1-beta.3-patched` | upstream `v1.5.1-beta.3` | 实际运行版；下列补丁全部在此分支 |
+| `local/main-patched` | upstream `main` `afbbc240`（2026-10-22） | 实际运行版；下列补丁全部在此分支 |
+| `local/v1.5.1-beta.3-patched` | upstream `v1.5.1-beta.3` | 旧运行版，保留为整体回滚点（tag `backup/pre-upstream-upgrade-20261022` = `f39246e9`） |
 | `feat/model-picker-aggregation` | `main` | 备用上游 PR（模型选择器聚合） |
 
 remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
@@ -49,6 +51,54 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 | 17 | `8f8c8c62` | **空闲重置提示两条合一 + 文案精简**：`maybeAutoResetSessionOnIdle` 原本最多发两条——⏳「正在结束上一会话」（仅旧会话有存活 agent 进程时，发在慢关闭前）+ ⏰「已切换新会话」（无条件，发在关闭后），旧进程未退时用户连收两条（2026-10-17 mac-h 实测）。现**每次重置只发一条**：有活进程 → 发合并版 `MsgSessionAutoResetIdleClosing`（阈值 + 收尾警告 + 消息去向，`TryLock` 成功后、慢关闭前一次发出，关闭后不再补发）；无活进程 → 维持单条 ⏰（精简版 `MsgSessionAutoResetIdle`）。两文案五语言同步精简（去"通常几秒""你刚才的"等冗词，保留项目名/阈值/消息去向/引用上下文转交/2 分钟上限）。顺带把 `TryLock` 挪到任何回复之前——锁失败静默返回，不再有"已预告切换却没切换"的空炮 | `core/engine.go`、`core/i18n.go` | `TestIdleResetNoticesCarryProjectAndFate`（两文案五语言：格式动词/项目名/阈值/消息去向/上限全查）、`TestHandleMessage_AutoResetOnIdle_*`（无活进程路径行为不变） |
 | 18 | `40a4b7f8` `8be01a81` | **空提及意图判断**：人类「仅提及无文字」（群内真 @ 本 bot / 私聊空文本——飞书剥提及后正文为空）在平台层被判空静默丢弃，呼叫信号被吞、对话无声中断（2026-10-17 蒋宏实测：纯提及消息零响应零日志）。放行为「空提及回合」：平台 dispatch 带标（新增 `core.Message.EmptyMentionTurn`，dispatchMessage 加 `chatType` 参），空消息守门对其合成 i18n 意图占位 prompt（`MsgEmptyMentionPrompt`，五语言：延续话题则接话 / 呼叫则简短应答 / 疑似误触一句话确认）替代固定 ℹ️ 提示，由 agent 结合对话历史自行判断。开关 `empty_mention_turn` **默认开**（`8be01a81` 蒋宏裁定；显式 `false` 回退旧静默行为）。**bot 发送者永不带标**（ping-pong 底线，补丁 11/16 不动）；群内无 @ 空消息照丢；`group_reply_all`/mention 过滤不受影响 | `platform/feishu/feishu.go`、`core/engine.go`、`core/message.go`、`core/i18n.go` | `TestDispatchMessageEmptyMentionTurn`（群 @ 人过 / 群无 @ 丢 / bot 带 @ 仍丢 / p2p 过 / 开关关保持丢）、`TestHandleMessage_EmptyMentionTurn*`（合成 prompt 开 turn / bot 组合防御性静默）、`TestNewEmptyMentionTurnDefault`（默认开 / 显式关） |
 | — | `f520c48a` | **版本戳兜底**（补丁 11 顺带项）：裸 `go build`（win 构建流程无 ldflags）使 `--version` 自报 dev/none。ldflags 缺席时改从工具链内嵌的 VCS 构建信息读 `vcs.revision`/`vcs.time` 兜底 | `cmd/cc-connect/main.go`、`cmd/cc-connect/version_info.go` | 编译期；实测看 `--version` |
+
+## 上游跟进记录（2026-10-22，基线 `afbbc240`）
+
+上游自 `v1.5.1-beta.3` 后未再发 tag，`main` 相对本分支旧基线领先 115 个提交。本次把 33 个本地提交
+（18 个补丁 + 15 个文档提交）按原顺序 cherry-pick 到 `upstream/main` 上：**26 个干净落地，7 个冲突**，
+冲突全部是"上游重构后接口搬家"，逐个移植完成：
+
+| 补丁 | 冲突文件 | 处理 |
+|---|---|---|
+| 8 `18402a8e` | `core/cron.go` `core/engine.go` | 上游重写 cron 调度循环；`unwrapMutePlatform` 原样保留，两处 resolver 调用点照旧 |
+| 9 `41cd87fa` | `platform/feishu/feishu.go` | 上游新增 `groupChatHistoryShare` 字段；`chatTypes` 缓存与之并列保留，入口记录点不变 |
+| 11+13 `dad43437` | `core/*` `feishu.go` | 上游把 `dispatchMessage` 拆成 wrapper + `dispatchMessageWithHistory`（多 `groupHistoryCtx` 参），`fromBot` 穿透到两层 |
+| 14 `65ced2d9` | `proc_windows.go` `proc_unix.go` | 上游新增 `internal/taskkill` 包并删除 `isTaskkillNotRunning`；本地只保留 `fastKillTree`，判定改用上游 `taskkill.IsNotRunning` |
+| 16 `7cc5fe6b` | `platform/feishu/feishu.go` | 上游群过滤器新增活跃话题/降级分支；`fromBot` 条件重挂在 `(!groupReplyAll \|\| fromBot)` 上 |
+| 18 `40a4b7f3` `8be01a81` | `core/*` `feishu.go` | 空提及标记得以穿透新的 `dispatchMessageWithHistory` 签名；`chatType` 取自上游新增的 `msg.ChatType` 解析；空文本判据补上上游的 `historyText` |
+
+### 补丁重评估结论
+
+**18 个补丁全部保留**——逐条 grep 上游确认：`modelPicker`、`endsWithParagraphBreak`、`FromBot`、
+`unrecognized_model`、`turn metrics`、`fastKillTree`、NO_REPLY 静默、`IdleClosing`、`EmptyMentionTurn`
+在上游均无对应实现；`peer_bots` 上游只有配置字段，没有本分支的 at 选路逻辑。两处做合并/降级：
+
+| 补丁 | 结论 | 原因 |
+|---|---|---|
+| 6 `2cc97715` | **保留为兜底**（适配提交 `cf3ad5ce`） | 上游 `c3a6a25e` 新增 `context_window_tokens` 覆盖、`93b3a5da` 改用 result 事件的 `modelUsage.contextWindow`，已覆盖主场景。本补丁改为走上游 `cs.contextWindow()`：覆盖值/上报值优先，网关改写模型名时用 init 事件模型重推窗口兜底。**装机后需实测 footer**：若网关上报的窗口本身是 200k，用 `context_window_tokens = 1000000` 钉死 |
+| 14 `65ced2d9` | **保留，砍掉一半** | 上游 `internal/taskkill` 已覆盖"目标不存在"的多语言判定；本地只保留 `fastKillTree()`（win 直通 `/T /F`） |
+| W `4a27a987` | 保留（可再议） | weixin 平台补丁，三机均未启用该平台；无冲突、无成本，暂留。若确定永不使用可单独回滚 |
+
+### 顺带获得的上游修复（本次升级的主要收益）
+
+- cron 调度器改为最多睡 30s、唤醒重算：**合盖睡眠后到点不触发**的问题修掉
+- busy 期间排队的消息也计入 `reset_on_idle_mins`，避免对话中途被轮转
+- `group_reply_all` 下旁听到的未授权群成员消息静默丢弃，不再逐条回"无权限"
+- `--resume` 时空 task-notification result 不再被当成回合结束（"(empty response)"错位）
+- unsolicited reader 取消/退出时补发已累积文本，并保证顺序在下一回合回复之前
+- `AskUserQuestion` 卡片点击可靠性（扁平 action 行 + 过期点击丢弃）、卡片 `/switch` 不清历史
+
+**有意不采纳**：飞书 `group_chat_history_share`（需额外 `im:message.group_msg` 权限、增 token）、
+回执表情 `receipt_ack`、multi-workspace / web 面板，以及 slack/dingtalk/qq/wecom/codex/kimi 等
+未使用平台的改动。
+
+### 测试状态
+
+`go test -tags 'no_web goolm' ./...`：4535 通过 / 12 失败 / 26 跳过。12 个失败均与本地补丁无关，
+已在纯净 `afbbc240` worktree 对照复现：9 个 core workspace/skills 用例因 macOS `/private/var` 路径
+规范化失败、codex skills 用例依赖本机 app-server、opencode/antigravity 两条为重跑即过的偶发。
+本地补丁相关的 38 条回归用例（mention 选路/弃卡、空消息守门、空提及、idle 提示、NO_REPLY、mute 解包、
+win fast kill、ctx window）全部通过。
 
 ## 构建
 
