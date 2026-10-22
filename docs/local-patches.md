@@ -104,6 +104,9 @@ win fast kill、ctx window）全部通过。
 
 ```bash
 make build-noweb          # 需要 go；国内网络可加 GOPROXY=goproxy.cn
+# 版本戳：上游 main 的 Makefile 仍写死 VERSION := v1.5.1-beta.1（发行线分叉后未回灌），
+# 直接用会在 --version 里报出比旧二进制更老的版本。构建时显式覆盖：
+make build-noweb VERSION=v1.5.1-beta.3+main.afbbc240
 ```
 
 （装到哪个路径、如何升级/回滚、备份约定：属部署侧，见运行方自己的运维文档。）
