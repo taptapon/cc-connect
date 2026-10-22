@@ -50,6 +50,7 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 | 16 | `7cc5fe6b` | **群聊 bot 发送者一律要求真 @**（台账 #6 落地）：`group_reply_all` 是人类便利开关，不应对 app 发送者生效——否则对端 bot 每条未 @ 的群消息（收尾、知会、闲聊）都白开一个全量 turn（2026-10-15 三机群实测单次 ~5.5 万 token 冷启动）。群 mention 过滤器条件加 `fromBot` 分支：bot 消息无真 @ 即丢，**只落 INFO 日志不回复**（回 bot 正是要防的 ping-pong 风源）；协议内的 @ 消息照常 spawn、p2p 不受影响、人类消息不受影响、relay 不受影响（daemon 内部路径非平台入站）。未开 group_reply_all 的项目（mac-h 默认）行为不变。⚠️ win/c 侧开了 group_reply_all 的项目**换装后才生效** | `platform/feishu/feishu.go` | `TestOnMessageBotSenderGroupGate`（bot 无 @ 丢 / bot 带 @ 过且 FromBot=true / 人类无 @ 照过） |
 | 17 | `8f8c8c62` | **空闲重置提示两条合一 + 文案精简**：`maybeAutoResetSessionOnIdle` 原本最多发两条——⏳「正在结束上一会话」（仅旧会话有存活 agent 进程时，发在慢关闭前）+ ⏰「已切换新会话」（无条件，发在关闭后），旧进程未退时用户连收两条（2026-10-17 mac-h 实测）。现**每次重置只发一条**：有活进程 → 发合并版 `MsgSessionAutoResetIdleClosing`（阈值 + 收尾警告 + 消息去向，`TryLock` 成功后、慢关闭前一次发出，关闭后不再补发）；无活进程 → 维持单条 ⏰（精简版 `MsgSessionAutoResetIdle`）。两文案五语言同步精简（去"通常几秒""你刚才的"等冗词，保留项目名/阈值/消息去向/引用上下文转交/2 分钟上限）。顺带把 `TryLock` 挪到任何回复之前——锁失败静默返回，不再有"已预告切换却没切换"的空炮 | `core/engine.go`、`core/i18n.go` | `TestIdleResetNoticesCarryProjectAndFate`（两文案五语言：格式动词/项目名/阈值/消息去向/上限全查）、`TestHandleMessage_AutoResetOnIdle_*`（无活进程路径行为不变） |
 | 18 | `40a4b7f8` `8be01a81` | **空提及意图判断**：人类「仅提及无文字」（群内真 @ 本 bot / 私聊空文本——飞书剥提及后正文为空）在平台层被判空静默丢弃，呼叫信号被吞、对话无声中断（2026-10-17 蒋宏实测：纯提及消息零响应零日志）。放行为「空提及回合」：平台 dispatch 带标（新增 `core.Message.EmptyMentionTurn`，dispatchMessage 加 `chatType` 参），空消息守门对其合成 i18n 意图占位 prompt（`MsgEmptyMentionPrompt`，五语言：延续话题则接话 / 呼叫则简短应答 / 疑似误触一句话确认）替代固定 ℹ️ 提示，由 agent 结合对话历史自行判断。开关 `empty_mention_turn` **默认开**（`8be01a81` 蒋宏裁定；显式 `false` 回退旧静默行为）。**bot 发送者永不带标**（ping-pong 底线，补丁 11/16 不动）；群内无 @ 空消息照丢；`group_reply_all`/mention 过滤不受影响 | `platform/feishu/feishu.go`、`core/engine.go`、`core/message.go`、`core/i18n.go` | `TestDispatchMessageEmptyMentionTurn`（群 @ 人过 / 群无 @ 丢 / bot 带 @ 仍丢 / p2p 过 / 开关关保持丢）、`TestHandleMessage_EmptyMentionTurn*`（合成 prompt 开 turn / bot 组合防御性静默）、`TestNewEmptyMentionTurnDefault`（默认开 / 显式关） |
+| 19 | `c216f351` | **非 Windows 的 daemon 重启被拆成 Stop→Start 导致自杀**：上游 `987f454f` 为 Windows 孤儿进程把 `daemon restart` 统一改成 stop→reap→start。launchd 的 `Stop()` 是 `bootout`，会连带杀掉 daemon 进程树里的一切——包括 ops timer 脚本和它拉起的 CLI 本身，于是 `Start()` 永远跑不到，服务停在"未加载"（2026-10-22 mac-c 实锤：升级后 daemon 未起，watchdog 的 `kickstart` 报 service not found，回滚二进制也救不回，需手工 `launchctl bootstrap`）。现非 Windows 一律走 manager 的原子 `Restart()`（launchd `kickstart -kp` / systemd restart），Windows 保留 stop/reap/start | `cmd/cc-connect/daemon.go` | `go test ./cmd/cc-connect/`；上机实测：ops upgrade 后 daemon 自动恢复（PID 60905 → 65319） |
 | — | `f520c48a` | **版本戳兜底**（补丁 11 顺带项）：裸 `go build`（win 构建流程无 ldflags）使 `--version` 自报 dev/none。ldflags 缺席时改从工具链内嵌的 VCS 构建信息读 `vcs.revision`/`vcs.time` 兜底 | `cmd/cc-connect/main.go`、`cmd/cc-connect/version_info.go` | 编译期；实测看 `--version` |
 
 ## 上游跟进记录（2026-10-22，基线 `afbbc240`）
@@ -72,6 +73,10 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 **18 个补丁全部保留**——逐条 grep 上游确认：`modelPicker`、`endsWithParagraphBreak`、`FromBot`、
 `unrecognized_model`、`turn metrics`、`fastKillTree`、NO_REPLY 静默、`IdleClosing`、`EmptyMentionTurn`
 在上游均无对应实现；`peer_bots` 上游只有配置字段，没有本分支的 at 选路逻辑。两处做合并/降级：
+
+装机首轮（2026-10-22 14:02）又暴露一个上游回归：`987f454f` 把 `daemon restart` 改成 stop→start，
+在 launchd 上等于 bootout 自杀，导致升级后服务未加载、需要手工 `launchctl bootstrap`。已补**补丁 19**
+（非 Windows 走原子 Restart），重试升级一次通过。
 
 | 补丁 | 结论 | 原因 |
 |---|---|---|
