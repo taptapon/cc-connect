@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -347,6 +348,22 @@ func startService(mgr serviceLifecycle, reap func() bool) error {
 // followed by startWindowsTask(). Reaping before the restart instead would race
 // the wrapper's 10s relaunch.
 func restartService(mgr serviceLifecycle, reap func() bool) error {
+	// Non-Windows service managers restart atomically: launchd's
+	// `kickstart -kp` replaces the running job in one transaction, and
+	// systemd's restart keeps the unit's cgroup bookkeeping intact.
+	// Splitting it into Stop (launchctl bootout / systemctl stop) → Start
+	// is fatal in two ways here: bootout tears down every process the daemon
+	// launched — including this CLI when `daemon restart` is invoked from a
+	// session inside the daemon's process tree (our ops timer) — so Start()
+	// never runs and the service stays unloaded. The stop/reap/start split
+	// exists for Windows, where the scheduled-task wrapper is a separate
+	// process and a task-level restart leaves the child running; keep it
+	// there only.
+	if runtime.GOOS != "windows" {
+		if r, ok := mgr.(interface{ Restart() error }); ok {
+			return r.Restart()
+		}
+	}
 	if err := stopService(mgr, reap); err != nil {
 		slog.Warn("daemon: stop before restart failed", "error", err)
 	}
