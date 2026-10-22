@@ -750,7 +750,12 @@ func (cs *claudeSession) alignContextWindow(u *core.ContextUsage) {
 		return
 	}
 	if m := cs.GetModel(); m != "" {
-		u.ContextWindow = claudeContextWindow(m)
+		// contextWindow (upstream) prefers the operator override and the
+		// window Claude Code reported in a result event, falling back to the
+		// model-name heuristic applied to the init-event model. Keeping this
+		// call on the init model is the point of patch 6: the transcript's
+		// recorded model can be a gateway-rewritten alias without "[1m]".
+		u.ContextWindow = cs.contextWindow(m)
 	}
 }
 
