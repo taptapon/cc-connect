@@ -17511,3 +17511,30 @@ func TestCmdCurrent_UsesNativeSummaryForCurrentAgentSession(t *testing.T) {
 		t.Fatalf("/list item count = %d, want %d\n%s", got, len(nativeSessions), p.sent[0])
 	}
 }
+
+type stubFooterDisplayAgent struct {
+	stubModelModeAgent
+	display map[string]string
+}
+
+func (a *stubFooterDisplayAgent) GetModel() string { return "ccs-claude-p1--glm[1m]" }
+func (a *stubFooterDisplayAgent) ModelDisplayName(model string) string {
+	if v, ok := a.display[model]; ok {
+		return v
+	}
+	return ""
+}
+
+func TestReplyFooterModelPrefersDisplayName(t *testing.T) {
+	agent := &stubFooterDisplayAgent{display: map[string]string{
+		"ccs-claude-p1--glm[1m]": "glm-5.3-flash（智普）",
+	}}
+	if got := replyFooterModel(nil, agent); got != "glm-5.3-flash（智普）" {
+		t.Fatalf("replyFooterModel with display name = %q", got)
+	}
+	bare := &stubModelModeAgent{}
+	bare.model = "claude-opus-4-7[1m]"
+	if got := replyFooterModel(nil, bare); got != "claude-opus-4-7[1m]" {
+		t.Fatalf("replyFooterModel without display-name interface = %q, want raw id", got)
+	}
+}

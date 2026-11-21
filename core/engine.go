@@ -8350,17 +8350,30 @@ func formatElapsed(d time.Duration, streaming bool, lang Language) string {
 }
 
 func replyFooterModel(session AgentSession, agent Agent) string {
+	model := ""
 	if session != nil {
 		if getter, ok := session.(interface{ GetModel() string }); ok {
-			if model := strings.TrimSpace(getter.GetModel()); model != "" {
-				return model
+			model = strings.TrimSpace(getter.GetModel())
+		}
+	}
+	if model == "" {
+		if getter, ok := agent.(interface{ GetModel() string }); ok {
+			model = strings.TrimSpace(getter.GetModel())
+		}
+	}
+	if model != "" {
+		// Prefer a short display name (patch 21): agents that can resolve a
+		// friendly label for the raw model id (e.g. CC Switch aggregation
+		// labels like "glm-5.3-flash（智普）" for "ccs-claude-…--glm[1m]")
+		// get it shown in the reply footer instead of the routing id.
+		// Unknown ids fall through unchanged.
+		if ds, ok := agent.(interface{ ModelDisplayName(string) string }); ok {
+			if dn := strings.TrimSpace(ds.ModelDisplayName(model)); dn != "" {
+				return dn
 			}
 		}
 	}
-	if getter, ok := agent.(interface{ GetModel() string }); ok {
-		return strings.TrimSpace(getter.GetModel())
-	}
-	return ""
+	return model
 }
 
 func replyFooterReasoningEffort(session AgentSession, agent Agent) string {

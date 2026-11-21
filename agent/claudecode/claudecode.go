@@ -383,6 +383,27 @@ func (a *Agent) GetModel() string {
 	return core.GetProviderModel(a.providers, a.activeIdx, a.model)
 }
 
+// ModelDisplayName resolves a short friendly name for the reply footer
+// (patch 21). Lookup order: config provider-model aliases, then CC Switch
+// modelPicker labels. Matching is case-insensitive because gateways may
+// rewrite the [1M]/[1m] suffix case in session transcripts. Returns "" when
+// no alias exists — callers keep the raw model id.
+func (a *Agent) ModelDisplayName(model string) string {
+	for _, m := range a.configuredModels() {
+		if m.Alias != "" && strings.EqualFold(m.Name, model) {
+			return m.Alias
+		}
+	}
+	if opts, _, ok := a.modelPickerOptions(); ok {
+		for _, m := range opts {
+			if m.Alias != "" && strings.EqualFold(m.Name, model) {
+				return m.Alias
+			}
+		}
+	}
+	return ""
+}
+
 func (a *Agent) SetReasoningEffort(effort string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

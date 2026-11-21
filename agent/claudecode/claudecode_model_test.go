@@ -252,3 +252,38 @@ func TestAvailableModels_PickerOverridesConfiguredModels(t *testing.T) {
 		t.Fatalf("AvailableModels() = %+v, want picker to override configured models", models)
 	}
 }
+
+func TestModelDisplayName_AliasLookup(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	// Picker label alias; note the id case differs from what gateways report
+	// in transcripts ([1M] here vs [1m] in footers) — matching must fold case.
+	settings := `{"modelPicker":{"options":[{"model":"ccs-claude-p1--glm-5.3-flash[1M]","label":"glm-5.3-flash（智普）"},{"model":"ccs-claude-p2--ds[1M]"}],"replaceBuiltInOptions":true}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(settings), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{}
+	if got := a.ModelDisplayName("ccs-claude-p1--glm-5.3-flash[1m]"); got != "glm-5.3-flash（智普）" {
+		t.Fatalf("ModelDisplayName(picker hit, folded case) = %q", got)
+	}
+	if got := a.ModelDisplayName("ccs-claude-p2--ds[1m]"); got != "" {
+		t.Fatalf("ModelDisplayName(no label) = %q, want empty", got)
+	}
+	if got := a.ModelDisplayName("sonnet"); got != "" {
+		t.Fatalf("ModelDisplayName(unknown) = %q, want empty", got)
+	}
+}
+
+func TestModelDisplayName_ConfigAliasWins(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	a := &Agent{
+		providers: []core.ProviderConfig{
+			{Name: "p", Models: []core.ModelOption{{Name: "gpt-5.3-codex", Alias: "codex"}}},
+		},
+		activeIdx: 0,
+	}
+	if got := a.ModelDisplayName("GPT-5.3-Codex"); got != "codex" {
+		t.Fatalf("ModelDisplayName(config alias) = %q, want codex", got)
+	}
+}
