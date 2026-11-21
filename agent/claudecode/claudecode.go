@@ -475,7 +475,11 @@ func (a *Agent) modelPickerOptions() (models []core.ModelOption, replaceBuiltIn 
 		if desc == "" {
 			desc = o.Description
 		}
-		models = append(models, core.ModelOption{Name: o.Model, Desc: desc})
+		// Alias carries the short friendly label so /model cards render it
+		// instead of the long routing id (e.g. "glm-5.3-flash（智普）" for
+		// "ccs-claude-p00b5d1--glm-5.3-flash[1M]"); the id stays available in
+		// the card's current-model line and for /model <id> direct input.
+		models = append(models, core.ModelOption{Name: o.Model, Desc: desc, Alias: o.Label})
 	}
 	if len(models) == 0 {
 		return nil, false, false

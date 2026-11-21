@@ -10607,7 +10607,7 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 				}
 				var line string
 				if m.Alias != "" {
-					line = fmt.Sprintf("%s%d. %s - %s\n", marker, i+1, m.Alias, m.Name)
+					line = fmt.Sprintf("%s%d. %s\n", marker, i+1, m.Alias)
 				} else {
 					desc := m.Desc
 					if desc != "" {
@@ -14079,7 +14079,10 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 	for i, m := range models {
 		label := m.Name
 		if m.Alias != "" {
-			label = m.Alias + " - " + m.Name
+			// Alias-only: the full routing id (e.g. "ccs-claude-…--glm[1M]")
+			// is unreadable in a select option; the current-model line above
+			// still shows it verbatim.
+			label = m.Alias
 		} else if m.Desc != "" {
 			label += " — " + m.Desc
 		}

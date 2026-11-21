@@ -179,11 +179,14 @@ func TestModelPickerOptions_FromSettings(t *testing.T) {
 	if len(opts) != 2 {
 		t.Fatalf("got %d options, want 2", len(opts))
 	}
-	if opts[0].Name != "ccs-claude-glm[1M]" || opts[0].Desc != "glm (zhipu)" {
+	if opts[0].Name != "ccs-claude-glm[1M]" || opts[0].Desc != "glm (zhipu)" || opts[0].Alias != "glm (zhipu)" {
 		t.Fatalf("opts[0] = %+v", opts[0])
 	}
 	if opts[1].Desc != "deepseek-flash (1M)" {
 		t.Fatalf("opts[1] = %+v, want label fallback to description", opts[1])
+	}
+	if opts[1].Alias != "" {
+		t.Fatalf("opts[1].Alias = %q, want empty when label missing", opts[1].Alias)
 	}
 }
 
