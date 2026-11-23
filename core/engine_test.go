@@ -9870,7 +9870,7 @@ func TestHandleCardNav_ModelResultBackReturnsModelCard(t *testing.T) {
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 
 	sessionKey := "feishu:channel1:user1"
-	result := e.renderModelSwitchResultCard("gpt-5.4", nil)
+	result := e.renderModelSwitchResultCard(agent, "gpt-5.4", nil)
 	buttons := result.CollectButtons()
 	if len(buttons) != 1 || len(buttons[0]) != 1 {
 		t.Fatalf("result buttons = %#v, want single back button", buttons)
@@ -17536,5 +17536,38 @@ func TestReplyFooterModelPrefersDisplayName(t *testing.T) {
 	bare.model = "claude-opus-4-7[1m]"
 	if got := replyFooterModel(nil, bare); got != "claude-opus-4-7[1m]" {
 		t.Fatalf("replyFooterModel without display-name interface = %q, want raw id", got)
+	}
+}
+
+func TestModelDisplayLabelFallsBackToRawID(t *testing.T) {
+	agent := &stubFooterDisplayAgent{display: map[string]string{
+		"ccs-claude-p1--glm[1m]": "glm-5.3-flash（智普）",
+	}}
+	if got := modelDisplayLabel(agent, "ccs-claude-p1--glm[1m]"); got != "glm-5.3-flash（智普）" {
+		t.Fatalf("modelDisplayLabel with alias = %q", got)
+	}
+	if got := modelDisplayLabel(agent, "unknown-model"); got != "unknown-model" {
+		t.Fatalf("modelDisplayLabel without alias = %q, want raw id", got)
+	}
+	if got := modelDisplayLabel(nil, "raw-model"); got != "raw-model" {
+		t.Fatalf("modelDisplayLabel with nil agent = %q, want raw id", got)
+	}
+}
+
+func TestModelSwitchCardsUseDisplayName(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubFooterDisplayAgent{display: map[string]string{
+		"ccs-claude-p1--glm[1m]": "glm-5.3-flash（智普）",
+	}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	switching := e.renderModelSwitchingCard(agent, "ccs-claude-p1--glm[1m]").RenderText()
+	if !strings.Contains(switching, "glm-5.3-flash（智普）") || strings.Contains(switching, "ccs-claude-p1--glm[1m]") {
+		t.Fatalf("switching card = %q, want alias-only", switching)
+	}
+
+	result := e.renderModelSwitchResultCard(agent, "ccs-claude-p1--glm[1m]", nil).RenderText()
+	if !strings.Contains(result, "glm-5.3-flash（智普）") || strings.Contains(result, "ccs-claude-p1--glm[1m]") {
+		t.Fatalf("result card = %q, want alias-only", result)
 	}
 }

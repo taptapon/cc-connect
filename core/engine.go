@@ -8367,10 +8367,23 @@ func replyFooterModel(session AgentSession, agent Agent) string {
 		// labels like "glm-5.3-flash（智普）" for "ccs-claude-…--glm[1m]")
 		// get it shown in the reply footer instead of the routing id.
 		// Unknown ids fall through unchanged.
-		if ds, ok := agent.(interface{ ModelDisplayName(string) string }); ok {
-			if dn := strings.TrimSpace(ds.ModelDisplayName(model)); dn != "" {
-				return dn
-			}
+		return modelDisplayLabel(agent, model)
+	}
+	return model
+}
+
+// modelDisplayLabel resolves a short friendly name for a raw model id, falling
+// back to the id itself when the agent has no alias for it (patch 22). Shared
+// by the reply footer (patch 21) and the /model switch receipts and cards so
+// they read the same instead of echoing the full CC Switch routing id.
+func modelDisplayLabel(agent Agent, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || agent == nil {
+		return model
+	}
+	if ds, ok := agent.(interface{ ModelDisplayName(string) string }); ok {
+		if dn := strings.TrimSpace(ds.ModelDisplayName(model)); dn != "" {
+			return dn
 		}
 	}
 	return model
@@ -10686,10 +10699,10 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 	sessions.Save()
 
 	if deferred {
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeQueued, target))
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeQueued, modelDisplayLabel(agent, target)))
 		return
 	}
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChanged, target))
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChanged, modelDisplayLabel(agent, target)))
 }
 
 // deferRestartIfTurnInFlight reports whether a turn is running on the live
@@ -13226,7 +13239,7 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 		sessions.Save()
 	}
 
-	return e.renderModelSwitchResultCard(resolved, err)
+	return e.renderModelSwitchResultCard(agent, resolved, err)
 }
 
 func (e *Engine) persistWorkspaceModelOverride(interactiveKey, sessionKey string, agent Agent, model string) {
@@ -13842,7 +13855,7 @@ func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveSt
 		sessions.Save()
 	}
 
-	resultCard := e.renderModelSwitchResultCard(resolved, err)
+	resultCard := e.renderModelSwitchResultCard(agent, resolved, err)
 	if state != nil {
 		state.mu.Lock()
 		if state.modelSwitch != nil {
@@ -13851,7 +13864,7 @@ func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveSt
 			if err != nil {
 				state.modelSwitch.result = e.i18n.Tf(MsgModelCardSwitchFailed, err)
 			} else {
-				state.modelSwitch.result = e.i18n.Tf(MsgModelCardSwitched, resolved)
+				state.modelSwitch.result = e.i18n.Tf(MsgModelCardSwitched, modelDisplayLabel(agent, resolved))
 			}
 		}
 		state.mu.Unlock()
@@ -14061,13 +14074,12 @@ func (e *Engine) renderLangCard() *Card {
 }
 
 func (e *Engine) renderModelCard(sessionKey string) *Card {
-	if ms := e.getModelSwitchState(sessionKey); ms != nil && ms.phase == "switching" {
-		return e.renderModelSwitchingCard(ms.target)
-	}
-
 	agent := e.agent
 	if sessionKey != "" {
 		agent, _ = e.sessionContextForKey(sessionKey)
+	}
+	if ms := e.getModelSwitchState(sessionKey); ms != nil && ms.phase == "switching" {
+		return e.renderModelSwitchingCard(agent, ms.target)
 	}
 
 	switcher, ok := agent.(ModelSwitcher)
@@ -14114,14 +14126,14 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 	return cb.Build()
 }
 
-func (e *Engine) renderModelSwitchingCard(target string) *Card {
+func (e *Engine) renderModelSwitchingCard(agent Agent, target string) *Card {
 	return NewCard().
 		Title(e.i18n.T(MsgCardTitleModel), "orange").
-		Markdown(e.i18n.Tf(MsgModelCardSwitching, target)).
+		Markdown(e.i18n.Tf(MsgModelCardSwitching, modelDisplayLabel(agent, target))).
 		Build()
 }
 
-func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
+func (e *Engine) renderModelSwitchResultCard(agent Agent, target string, err error) *Card {
 	if err != nil {
 		return NewCard().
 			Title(e.i18n.T(MsgCardTitleModel), "red").
@@ -14131,7 +14143,7 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 	}
 	return NewCard().
 		Title(e.i18n.T(MsgCardTitleModel), "green").
-		Markdown(e.i18n.Tf(MsgModelCardSwitched, target)).
+		Markdown(e.i18n.Tf(MsgModelCardSwitched, modelDisplayLabel(agent, target))).
 		Buttons(e.modelCardBackButton()).
 		Build()
 }
