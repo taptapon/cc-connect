@@ -113,6 +113,10 @@ func TestAvailableModels_ConfiguredModelsWinWithoutAPICall(t *testing.T) {
 	var hits int32
 	srv := modelsAPIStub(t, &hits)
 
+	// Isolate CLAUDE_CONFIG_DIR: a modelPicker block in the developer's
+	// settings.json would take precedence over configured provider models.
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+
 	a := &Agent{
 		providers: []core.ProviderConfig{{
 			APIKey:  "test-key",

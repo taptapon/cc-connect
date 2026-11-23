@@ -11,6 +11,10 @@ import (
 func TestMiniMaxAvailableModelsPreservesSelection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Any unintended HTTP discovery must not reach a provider.
+	// A modelPicker block in the developer's settings.json (CC Switch
+	// aggregation with replaceBuiltInOptions) takes precedence over provider
+	// models; isolate it so the built-in MiniMax picker is what is asserted.
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	a := &Agent{cmd: "/bin/false", activeIdx: 0, providers: []core.ProviderConfig{{BaseURL: "https://api.minimax.io/anthropic", Model: "MiniMax-M2.7"}}}
 	want := []core.ModelOption{{Name: "MiniMax-M3.1-Flash"}, {Name: "MiniMax-M3"}}
 	if got := a.AvailableModels(ctx); !reflect.DeepEqual(got, want) {
