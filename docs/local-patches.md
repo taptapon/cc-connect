@@ -4,18 +4,22 @@
 > **不含部署侧信息**（构建产物装到哪、如何安装/升级/回滚）——那属于运行方的运维文档，不在本仓。
 >
 > English: this document lists the local patch set carried by the `local/main-patched`
-> branch on top of upstream `main` (`afbbc240`, 2026-10-22). Install / upgrade / rollback
+> branch on top of upstream `main` (`ba299781`, 2026-11-23). Install / upgrade / rollback
 > steps are intentionally out of scope.
 
 ## 分支
 
 | 分支 | 基线 | 用途 |
 |---|---|---|
-| `local/main-patched` | upstream `main` `afbbc240`（2026-10-22） | 实际运行版；下列补丁全部在此分支 |
+| `local/main-patched` | upstream `main` `ba299781`（2026-11-23） | 实际运行版；下列补丁全部在此分支 |
 | `local/v1.5.1-beta.3-patched` | upstream `v1.5.1-beta.3` | 旧运行版，保留为整体回滚点（tag `backup/pre-upstream-upgrade-20261022` = `f39246e9`） |
 | `feat/model-picker-aggregation` | `main` | 备用上游 PR（模型选择器聚合） |
 
 remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
+
+> ⚠️ **commit 号会随 rebase 重写**：下表登记的 hash 是各次 rebase 当时的快照。2026-11-23
+> rebase 到 `ba299781` 后全部重写，当前有效对照表见文末「上游跟进记录（2026-11-23）」节；
+> 找代码请按"改了什么"描述 grep，不要按老 hash。
 
 ## 背景：这组改动解决什么
 
@@ -38,7 +42,7 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 | 6 | `2cc97715` | footer 的 `ctx N%` 虚高：网关会把 API 响应里的 model 字段改写掉 `[1m]` 后缀，usage 走 transcript 回读时按 200k 窗口算，ctx 从真实 ~18% 虚标到 91%——新增 `alignContextWindow`，transcript 回读的两处优先用 init 事件的会话模型名重推窗口。token 数值不动 | `agent/claudecode/session.go` | `session_test.go` |
 | 7 | `3cd7f168` `35a24ba5` | bot @ 人类用户修复（**两个 bug 叠加**导致 @人 从未生效）：① lark SDK `GetChatMembers` 迭代器在单页群无限重复第一页，`fetchChatMembers` 的同名去重把重复成员当重名、将 open_id 抹成 `""` → 群名片解析层拿到全空 map，静默失效还缓存 1 小时；② `buildReplyContent` 对 @human 纯文本消息也把 text 语法 at 转成卡片语法再按 `MsgTypeText` 发送，飞书削成空 `<at user_id=""></at>` | `platform/feishu/feishu.go` | `TestAddChatMember`、`TestBuildReplyContent_HumanMention*` |
 | 7b | `d20b442e` | `ShouldDetachForFinalText` 从「含 @bot」放宽到「含**任意**解析后 at」——quiet 模式下最终回复里 **@人类** 原本留在卡片里（不解析、不触发提醒）静默丢，现在也回落文本、真发蓝 @。代价：带 @ 的最终回复失去卡片 markdown | `platform/feishu/feishu.go` | `TestShouldDetachForFinalText`（人类 mention 用例已翻转） |
-| W | `4a27a987` | **weixin 平台**：interactive `Send` 改走 reply 路径 + 新增 budget notice。⚠️ 该 commit 自称 "patch 7"，与上表补丁 7 是**两套独立编号**（weixin 侧自编号，故此处记作 `W` 以免混淆） | `platform/weixin/weixin.go`、`platform/weixin/media_outbound.go` | `weixin_test.go` |
+| W | `4a27a987` | **weixin 平台**：interactive `Send` 改走 reply 路径 + 新增 budget notice。⚠️ 该 commit 自称 "patch 7"，与上表补丁 7 是**两套独立编号**（weixin 侧自编号，故此处记作 `W` 以免混淆）。**2026-11-23 部分退役**：时间窗重分类（`classifySendPath`/`recordInbound`）删除，改用上游 #1937 的 `replyContext.inbound` 标记（media 发送同改）；**budget notice 与 burst_limit=6 保留**（上游无对应实现） | `platform/weixin/weixin.go`、`platform/weixin/media_outbound.go` | `weixin_test.go` |
 | 8 | `18402a8e` | **mute timer 吞掉显式外发**：`--mute` 的 timer/cron job 把会话 platform 包成 `mutePlatform`（丢弃一切 Send/Reply 且返回 nil），而 `resolveOutboundSessionTarget` / `resolveSendTarget` 把这个包装器直接交给外部 API 调用——mute 回合内 `cc-connect send -s` **假报成功、消息静默丢弃**（2026-10-14 实锤：重启回执、定时天气、接续确认全灭，且误诊过"卡片渲染"）。两处 resolver 现在解包回真实 platform；job 自身的 ⏰通知/结果回执仍被 mute 静音，语义不变 | `core/engine.go`、`core/cron.go` | `TestUnwrapMutePlatform` |
 | 9 | `41cd87fa` | **私聊豁免弃卡降级**：`ShouldDetachForFinalText` 原先对"最终文本含可解析 @"一律删预览卡回落纯文本——私聊里这是纯损失（收件人只有用户本人，消息必达，at 无 mention 事件可触发，降级只丢 markdown 渲染；2026-10-14 mac-c 实测：DM 回复顺嘴写 `@h-cc` 命中 mention_map，整条表格变乱码）。现在 Platform 维护 chat_id→chat_type 缓存（消息入口记录），**p2p 会话直接保卡**；群聊与缓存未命中（如 timer/cron 主动外发）保持原判定 fail closed | `platform/feishu/feishu.go` | `TestShouldDetachP2PExemption` |
 | 10 | `18c9fd5f` | **空闲重置提示匿名**：`reset_on_idle_mins` 触发的自动重置两条提示（⏳ 收尾中/⏰ 已重置）既不说重置的是**哪个项目**的会话、也不说**刚到的消息去哪了**——2026-10-15 实测（w-cc 接入裁定时撞上 180 分钟重置），用户"看不出来重置的谁和谁"。两条提示现带项目名（`e.name`），⏰ 补"你刚才的消息将由新会话继续处理（引用的回复上下文会一并转交）"。注意：重置发生在消息处理**之前**，触发消息本身从不丢；跨会话上下文靠飞书引用回复链注入（`fetchReplyChain`），裸发不带引用的回复仍会丢上下文 | `core/i18n.go`、`core/engine.go` | `TestIdleResetNoticesCarryProjectAndFate`、`TestHandleMessage_AutoResetOnIdle_*`（断言已随新文案更新） |
@@ -50,7 +54,7 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 | 16 | `7cc5fe6b` | **群聊 bot 发送者一律要求真 @**（台账 #6 落地）：`group_reply_all` 是人类便利开关，不应对 app 发送者生效——否则对端 bot 每条未 @ 的群消息（收尾、知会、闲聊）都白开一个全量 turn（2026-10-15 三机群实测单次 ~5.5 万 token 冷启动）。群 mention 过滤器条件加 `fromBot` 分支：bot 消息无真 @ 即丢，**只落 INFO 日志不回复**（回 bot 正是要防的 ping-pong 风源）；协议内的 @ 消息照常 spawn、p2p 不受影响、人类消息不受影响、relay 不受影响（daemon 内部路径非平台入站）。未开 group_reply_all 的项目（mac-h 默认）行为不变。⚠️ win/c 侧开了 group_reply_all 的项目**换装后才生效** | `platform/feishu/feishu.go` | `TestOnMessageBotSenderGroupGate`（bot 无 @ 丢 / bot 带 @ 过且 FromBot=true / 人类无 @ 照过） |
 | 17 | `8f8c8c62` | **空闲重置提示两条合一 + 文案精简**：`maybeAutoResetSessionOnIdle` 原本最多发两条——⏳「正在结束上一会话」（仅旧会话有存活 agent 进程时，发在慢关闭前）+ ⏰「已切换新会话」（无条件，发在关闭后），旧进程未退时用户连收两条（2026-10-17 mac-h 实测）。现**每次重置只发一条**：有活进程 → 发合并版 `MsgSessionAutoResetIdleClosing`（阈值 + 收尾警告 + 消息去向，`TryLock` 成功后、慢关闭前一次发出，关闭后不再补发）；无活进程 → 维持单条 ⏰（精简版 `MsgSessionAutoResetIdle`）。两文案五语言同步精简（去"通常几秒""你刚才的"等冗词，保留项目名/阈值/消息去向/引用上下文转交/2 分钟上限）。顺带把 `TryLock` 挪到任何回复之前——锁失败静默返回，不再有"已预告切换却没切换"的空炮 | `core/engine.go`、`core/i18n.go` | `TestIdleResetNoticesCarryProjectAndFate`（两文案五语言：格式动词/项目名/阈值/消息去向/上限全查）、`TestHandleMessage_AutoResetOnIdle_*`（无活进程路径行为不变） |
 | 18 | `40a4b7f8` `8be01a81` | **空提及意图判断**：人类「仅提及无文字」（群内真 @ 本 bot / 私聊空文本——飞书剥提及后正文为空）在平台层被判空静默丢弃，呼叫信号被吞、对话无声中断（2026-10-17 蒋宏实测：纯提及消息零响应零日志）。放行为「空提及回合」：平台 dispatch 带标（新增 `core.Message.EmptyMentionTurn`，dispatchMessage 加 `chatType` 参），空消息守门对其合成 i18n 意图占位 prompt（`MsgEmptyMentionPrompt`，五语言：延续话题则接话 / 呼叫则简短应答 / 疑似误触一句话确认）替代固定 ℹ️ 提示，由 agent 结合对话历史自行判断。开关 `empty_mention_turn` **默认开**（`8be01a81` 蒋宏裁定；显式 `false` 回退旧静默行为）。**bot 发送者永不带标**（ping-pong 底线，补丁 11/16 不动）；群内无 @ 空消息照丢；`group_reply_all`/mention 过滤不受影响 | `platform/feishu/feishu.go`、`core/engine.go`、`core/message.go`、`core/i18n.go` | `TestDispatchMessageEmptyMentionTurn`（群 @ 人过 / 群无 @ 丢 / bot 带 @ 仍丢 / p2p 过 / 开关关保持丢）、`TestHandleMessage_EmptyMentionTurn*`（合成 prompt 开 turn / bot 组合防御性静默）、`TestNewEmptyMentionTurnDefault`（默认开 / 显式关） |
-| 19 | `c216f351` | **非 Windows 的 daemon 重启被拆成 Stop→Start 导致自杀**：上游 `987f454f` 为 Windows 孤儿进程把 `daemon restart` 统一改成 stop→reap→start。launchd 的 `Stop()` 是 `bootout`，会连带杀掉 daemon 进程树里的一切——包括 ops timer 脚本和它拉起的 CLI 本身，于是 `Start()` 永远跑不到，服务停在"未加载"（2026-10-22 mac-c 实锤：升级后 daemon 未起，watchdog 的 `kickstart` 报 service not found，回滚二进制也救不回，需手工 `launchctl bootstrap`）。现非 Windows 一律走 manager 的原子 `Restart()`（launchd `kickstart -kp` / systemd restart），Windows 保留 stop/reap/start | `cmd/cc-connect/daemon.go` | `go test ./cmd/cc-connect/`；上机实测：ops upgrade 后 daemon 自动恢复（PID 60905 → 65319） |
+| 19 | `c216f351` | **【已退役 2026-11-23，上游 #2286 原生覆盖】** 非 Windows 的 daemon 重启被拆成 Stop→Start 导致自杀：上游 `987f454f` 为 Windows 孤儿进程把 `daemon restart` 统一改成 stop→reap→start。launchd 的 `Stop()` 是 `bootout`，会连带杀掉 daemon 进程树里的一切——包括 ops timer 脚本和它拉起的 CLI 本身，于是 `Start()` 永远跑不到，服务停在"未加载"（2026-10-22 mac-c 实锤）。上游 2026-11-17 `59653b74`/`9438ef27` 引入 `daemon.InPlaceRestarter`（launchd `kickstart`、兼容旧 label），严格覆盖本地实现，故本地补丁删除 | `cmd/cc-connect/daemon.go` | 上游 `daemon/launchd_test.go`、`cmd/cc-connect/daemon_orphan_test.go` |
 | 20 | `4cad14ec` | **/model 列表显示长路由 id**：CC Switch 聚合模式写进 settings.json 的 `modelPicker.options` 里 `model` 是完整路由 id（`ccs-claude-p00b5d1--glm-5.3-flash[1M]`），而 `label` 本来就是短友好名（`glm-5.3-flash（智普）`）——无头 /model 卡片把两者拼在一起渲染（`alias - name` / `name — desc`），下拉项超长且重复（2026-11-21 mac-h 用户反馈）。现 `modelPickerOptions()` 把 `label` 填进既有的 `ModelOption.Alias` 通道，卡片下拉与非卡片文本列表改为 **alias-only 显示**（完整 id 仍可在卡片"当前模型"行看到，`/model <完整id>` 直输与序号切换不受影响）。副作用：config 配了 alias 的其他 agent（codex 等）显示从 `alias - name` 变 `alias`——alias 的设计意图即是短名替代 | `agent/claudecode/claudecode.go`、`core/engine.go` | `claudecode_model_test.go`（Alias 填充/缺 label 时为空断言）；core 模型相关用例全过 |
 | 21 | （本次提交） | **回复 footer 显示长路由 id**：CCD 风格 footer（`<model> · out N · in N cw N cr N · ctx N%`）上游刻意保留原始模型 id（"for diagnostic clarity"），聚合模式下即整串 `ccs-claude-…--glm[1m]`（2026-11-21 mac-h 用户反馈，紧随补丁 20）。现 `replyFooterModel()` 优先采用 agent 可选接口 `ModelDisplayName(model)` 的解析结果：claudecode 实现为 config provider-model alias → modelPicker label 两级查找（**忽略大小写**——网关会把 `[1M]` 改写成小写 `[1m]`，精确匹配会漏），查不到返回空、footer 保持原 id（非聚合 setups 行为不变）。footer 从 `ccs-claude-p00b5d1--glm-5.3-flash[1m]` 变 `glm-5.3-flash（智普）` | `core/engine.go`、`agent/claudecode/claudecode.go` | `claudecode_model_test.go`（picker 命中含大小写折叠 / 无 label 回退 / config alias 优先）、`core/engine_test.go`（replyFooterModel 有显示名用显示名 / 无接口用原 id） |
 | — | `f520c48a` | **版本戳兜底**（补丁 11 顺带项）：裸 `go build`（win 构建流程无 ldflags）使 `--version` 自报 dev/none。ldflags 缺席时改从工具链内嵌的 VCS 构建信息读 `vcs.revision`/`vcs.time` 兜底 | `cmd/cc-connect/main.go`、`cmd/cc-connect/version_info.go` | 编译期；实测看 `--version` |
@@ -107,13 +111,52 @@ remote：`origin` = `git@github.com:taptapon/cc-connect.git`（fork）。
 本地补丁相关的 38 条回归用例（mention 选路/弃卡、空消息守门、空提及、idle 提示、NO_REPLY、mute 解包、
 win fast kill、ctx window）全部通过。
 
+## 上游跟进记录（2026-11-23，基线 `ba299781`）
+
+上游自上次基线 `afbbc240`（2026-10-22）后再领先 **408 个提交**（247 文件，+37K 行）。本次把 42 个本地提交
+（含文档/测试提交）rebase 到 `ba299781`，冲突集中在 6 处，逐个处理：
+
+| 补丁 | 冲突文件 | 处理 |
+|---|---|---|
+| 1/2 `/model` 聚合 | `agent/claudecode/claudecode*.go` | 上游新增 MiniMax 模型优先分支。优先级定为 **聚合 picker(replace) → MiniMax → 已配置 → API → 内置回退**；非覆盖式 picker 仍追加在末尾 |
+| 6 ctx 窗口 | `agent/claudecode/session.go` | 上游 `claudeContextWindow(model, override)` 改双参、新增 `handleRefusalFallback`；`alignContextWindow` 跳板到上游 `cs.contextWindow(m)`（保留 init 模型重推语义） |
+| 11 空消息守门 | `core/message.go`、`platform/feishu/feishu.go` | 上游新增 `CardAnswerRendered` 字段与 `staged` 附件参数；`FromBot` 与之并存，三处 `core.Message` 构造取上游字段 + `FromBot` |
+| 16 bot 提及门 | `platform/feishu/feishu.go` | 上游把全局 `groupReplyAll` 改为按会话 `groupReplyAllForChat`；条件重挂 `(!groupReplyAllForChat \|\| fromBot)` |
+| 18 空提及 | `platform/feishu/feishu.go`、`*_test.go` | `dispatchMessage`/`dispatchMessageWithHistory` 签名同时容纳上游 `staged []stagedAttachment` 与本地 `fromBot`+`chatType`；上游引文/帖子解析重构（`quotedExtra`、`postFiles`→`files`）按上游变量合流；上游测试调用统一补 `false, ""` |
+| 21 footer 显示名 | `core/engine_test.go` | 纯相邻插入冲突，双方测试全保留 |
+
+### 本次退役 / 降级
+
+| 补丁 | 结论 | 原因 |
+|---|---|---|
+| 19 daemon 重启 | **退役** | 上游 #2286 引入 `daemon.InPlaceRestarter`（launchd kickstart + 旧 label 兼容），严格覆盖本地实现 |
+| W weixin 时间窗重分类 | **部分退役** | 上游 #1937 `replyContext.inbound` 根治同一问题；`media_outbound` 同改用 `inbound`。budget notice 与 `burst_limit=6` 保留（上游无对应） |
+| 其余补丁 | 全部保留 | 逐条核对上游无对应实现（modelPicker、FromBot、EmptyMentionTurn、ShouldDetachForFinalText、mute 解包、fastKillTree、NO_REPLY 静默、idle 提示、ctx 窗口兜底等） |
+
+### 顺带获得的上游修复（与 mac-h 部署直接相关）
+
+- **飞书**：静默 WebSocket 恢复（#2120/#2288）、AskUserQuestion/权限卡点击权限门与双答抑制、进度卡更新失败自恢复、Markdown 表格按内容定列宽与宽度填满、引用/转发展开与链接保真、视频/媒体下载、`attachment_wait` 附件暂存
+- **claudecode**：优雅取消 Ctrl 中断（#1765）、>256KB transcript 行、/usage 探针挂死、/model 回退到 Claude 5 家族、footer 显示 applied effort
+- **core/cron/timer**：timer `--exec` 走配置 shell（无头 PATH 坑）、停机不等运行中 job、长回复分段保留闭合代码围栏、UTF-8 截断不切烂、回合出错后后台事件不丢
+- **relay**：群回显保全响应、超时不再漏对方工具输出（跨机 bot 对话受益）
+- **daemon**：`InPlaceRestarter` 原地重启
+- 新平台 max/wps-xiezuo/wps-agentspace、新 agent pi/antigravity、约 10 个供应商预设、俄语 i18n、黑盒测试基建：本部署不用，未评估
+
+### 测试状态
+
+`TMPDIR=/private/tmp/cc-go-test go test ./...` **全绿**。⚠️ 用默认 `TMPDIR`（`/var/folders/...`）直接跑会
+在 core workspace/skills 等用例上报 `/var` vs `/private/var` 假失败——**上游原版在纯净 worktree 同样失败**，
+属 macOS 符号链环境问题而非补丁引入。跑测试前 `mkdir -p /private/tmp/cc-go-test` 并设置 TMPDIR 即可。
+另修一处本分支测试前置污染：上游 `TestAvailableModels_*`/`TestMiniMaxAvailableModels*` 未隔离
+`CLAUDE_CONFIG_DIR`，读到本机 CC Switch 聚合 `modelPicker` 就短路——已补 `t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())`。
+
 ## 构建
 
 ```bash
 make build-noweb          # 需要 go；国内网络可加 GOPROXY=goproxy.cn
 # 版本戳：上游 main 的 Makefile 仍写死 VERSION := v1.5.1-beta.1（发行线分叉后未回灌），
 # 直接用会在 --version 里报出比旧二进制更老的版本。构建时显式覆盖：
-make build-noweb VERSION=v1.5.1-beta.3+main.afbbc240
+make build-noweb VERSION=v1.5.1-beta.3+main.ba299781
 ```
 
 （装到哪个路径、如何升级/回滚、备份约定：属部署侧，见运行方自己的运维文档。）
